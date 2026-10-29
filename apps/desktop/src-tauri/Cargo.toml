@@ -1,0 +1,32 @@
+[package]
+name = "chengsi-desktop"
+version = "0.1.0"
+description = "澄思学术桌面版宿主"
+edition = "2021"
+rust-version = "1.95"
+
+[lib]
+name = "chengsi_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+dunce = "1"
+getrandom = "0.3"
+ulid = { version = "1", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+walkdir = "2"
+keyring = { version = "3", features = ["windows-native"] }
+ureq = { version = "2.10", features = ["json"] }
+urlencoding = "2"
+
+[dev-dependencies]
+tempfile = "3"

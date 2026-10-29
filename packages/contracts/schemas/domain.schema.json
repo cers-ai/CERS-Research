@@ -1,0 +1,491 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chengsi.local/schemas/domain.schema.json",
+  "title": "Chengsi Academic Domain Contract",
+  "description": "跨进程契约 v1。线协议字段为 camelCase；磁盘格式（.cers / SQLite）为 snake_case，不属于本 Schema。",
+  "x-contract-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "NodeType": {
+      "type": "string",
+      "enum": ["root", "research", "experiment", "report"]
+    },
+    "EdgeKind": {
+      "type": "string",
+      "enum": ["decomposition", "association"]
+    },
+    "NodeState": {
+      "type": "string",
+      "enum": ["ready", "running", "waiting_approval", "attention", "result_available"]
+    },
+    "ProposalStatus": {
+      "type": "string",
+      "enum": ["draft", "awaiting_approval", "approved", "rejected", "applied"]
+    },
+    "JobStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waiting_approval",
+        "paused",
+        "retry_pending",
+        "completed",
+        "failed",
+        "interrupted",
+        "cancelled"
+      ]
+    },
+    "AssetStatus": {
+      "type": "string",
+      "enum": ["indexed", "parsing", "unsupported", "missing", "relocated", "error"]
+    },
+    "SourceCoverage": {
+      "type": "string",
+      "enum": ["metadata_only", "abstract_only", "fulltext", "unavailable"]
+    },
+    "ClaimStatus": {
+      "type": "string",
+      "enum": [
+        "unverified",
+        "inferred",
+        "insufficient_evidence",
+        "partially_supported",
+        "supported",
+        "disputed",
+        "refuted"
+      ]
+    },
+    "ContentOrigin": {
+      "type": "string",
+      "enum": [
+        "retrieved_metadata",
+        "extracted_text",
+        "model_summary",
+        "hypothesis",
+        "experiment_result"
+      ]
+    },
+    "ReportProvenance": {
+      "type": "string",
+      "enum": ["user", "ai_accepted", "ai_edited", "external"]
+    },
+    "ReportChangeReview": {
+      "type": "string",
+      "enum": ["pending", "accepted", "rejected", "conflict"]
+    },
+    "ReportChangeProposalStatus": {
+      "type": "string",
+      "enum": ["pending", "partially_applied", "applied", "rejected", "conflict"]
+    },
+    "AutonomyLevel": {
+      "type": "string",
+      "enum": ["cautious", "balanced", "autonomous"]
+    },
+    "DataSensitivity": {
+      "type": "string",
+      "enum": ["public", "internal", "private"]
+    },
+    "Vec2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "ProjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "workspacePath", "createdAt", "schemaVersion"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "alias": { "type": "string" },
+        "workspacePath": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "schemaVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ResearchDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "content", "confirmedFields", "revision", "updatedAt"],
+      "properties": {
+        "projectId": { "type": "string" },
+        "content": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "question": { "type": "string" },
+            "goal": { "type": "string" },
+            "scope": { "type": "string" },
+            "approach": { "type": "string" },
+            "expectedOutputs": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "confirmedFields": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "revision": { "type": "integer", "minimum": 1 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "GraphNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "projectId", "type", "title", "goal", "state", "position", "revision"],
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "type": { "$ref": "#/$defs/NodeType" },
+        "title": { "type": "string" },
+        "goal": { "type": "string" },
+        "state": { "$ref": "#/$defs/NodeState" },
+        "position": { "$ref": "#/$defs/Vec2" },
+        "revision": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "GraphEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "projectId", "source", "target", "kind"],
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "kind": { "$ref": "#/$defs/EdgeKind" },
+        "label": { "type": "string" }
+      }
+    },
+    "ProposedNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clientId", "type", "title", "goal"],
+      "properties": {
+        "clientId": { "type": "string" },
+        "type": { "type": "string", "enum": ["research", "experiment", "report"] },
+        "title": { "type": "string" },
+        "goal": { "type": "string" }
+      }
+    },
+    "ProposedEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "targetId", "kind"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "targetId": { "type": "string" },
+        "kind": { "$ref": "#/$defs/EdgeKind" }
+      }
+    },
+    "GraphProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "projectId",
+        "anchorNodeId",
+        "baseGraphRevision",
+        "proposedNodes",
+        "proposedEdges",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "anchorNodeId": { "type": "string" },
+        "baseGraphRevision": { "type": "integer", "minimum": 1 },
+        "proposedNodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProposedNode" }
+        },
+        "proposedEdges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProposedEdge" }
+        },
+        "status": { "$ref": "#/$defs/ProposalStatus" },
+        "rationale": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ConfirmProposalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposalId", "editedProposalRevision", "idempotencyKey"],
+      "properties": {
+        "proposalId": { "type": "string" },
+        "editedProposalRevision": { "type": "integer", "minimum": 1 },
+        "idempotencyKey": { "type": "string", "minLength": 16 }
+      }
+    },
+    "RiskProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "networkEgress",
+        "dataExport",
+        "fileWrite",
+        "codeExecution",
+        "irreversible",
+        "dataSensitivity"
+      ],
+      "properties": {
+        "networkEgress": { "type": "boolean" },
+        "dataExport": { "type": "boolean" },
+        "fileWrite": { "type": "boolean" },
+        "codeExecution": { "type": "boolean" },
+        "irreversible": { "type": "boolean" },
+        "dataSensitivity": { "$ref": "#/$defs/DataSensitivity" }
+      }
+    },
+    "PlanStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "expectedOutput": { "type": "string" },
+        "requiresApproval": { "type": "boolean" }
+      }
+    },
+    "AnalysisOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "evidenceRefs"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+        "tradeoffs": { "type": "string" }
+      }
+    },
+    "InteractionCard": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "question", "allowFreeText"],
+          "properties": {
+            "kind": { "const": "clarification" },
+            "question": { "type": "string" },
+            "options": { "type": "array", "items": { "type": "string" } },
+            "allowFreeText": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "steps", "editable", "requiresApproval"],
+          "properties": {
+            "kind": { "const": "plan" },
+            "steps": { "type": "array", "items": { "$ref": "#/$defs/PlanStep" } },
+            "editable": { "const": true },
+            "requiresApproval": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "title", "options", "evidenceRefs"],
+          "properties": {
+            "kind": { "const": "analysis" },
+            "title": { "type": "string" },
+            "options": { "type": "array", "items": { "$ref": "#/$defs/AnalysisOption" } },
+            "evidenceRefs": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "resultRef", "findings", "caveats"],
+          "properties": {
+            "kind": { "const": "result_review" },
+            "resultRef": { "type": "string" },
+            "findings": { "type": "array", "items": { "type": "string" } },
+            "caveats": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "ResearchAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "nodeId",
+        "intent",
+        "rationale",
+        "evidenceRefs",
+        "expectedOutputs",
+        "risk",
+        "requiresApproval"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "nodeId": { "type": "string" },
+        "intent": { "type": "string" },
+        "rationale": { "type": "string" },
+        "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+        "expectedOutputs": { "type": "array", "items": { "type": "string" } },
+        "risk": { "$ref": "#/$defs/RiskProfile" },
+        "requiresApproval": { "type": "boolean" },
+        "card": { "$ref": "#/$defs/InteractionCard" }
+      }
+    },
+    "NextActionSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "projectId", "title", "reasonRefs", "action", "createdAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "nodeId": { "type": "string" },
+        "title": { "type": "string" },
+        "reasonRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["job", "result", "evidence_gap", "report_change"]
+              },
+              "id": { "type": "string" }
+            }
+          }
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string" },
+            "targetId": { "type": "string" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "EvidenceLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "coverage", "retrievedAt"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "assetId": { "type": "string" },
+        "assetRevision": { "type": "string" },
+        "coverage": { "$ref": "#/$defs/SourceCoverage" },
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "page": { "type": "integer", "minimum": 1 },
+            "section": { "type": "string" },
+            "spanId": { "type": "string" }
+          }
+        },
+        "excerpt": { "type": "string" },
+        "retrievedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ReportChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "blockId",
+        "beforeRevision",
+        "beforeHash",
+        "replacementText",
+        "evidenceRefs",
+        "review"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "blockId": { "type": "string" },
+        "beforeRevision": { "type": "integer", "minimum": 1 },
+        "beforeHash": { "type": "string" },
+        "replacementText": { "type": "string" },
+        "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+        "review": { "$ref": "#/$defs/ReportChangeReview" }
+      }
+    },
+    "ReportChangeProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reportId", "baseRevision", "changes", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "reportId": { "type": "string" },
+        "baseRevision": { "type": "integer", "minimum": 1 },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/ReportChange" } },
+        "status": { "$ref": "#/$defs/ReportChangeProposalStatus" }
+      }
+    },
+    "JobEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "jobId", "seq", "type", "timestamp", "payload", "schemaVersion"],
+      "properties": {
+        "eventId": { "type": "string" },
+        "jobId": { "type": "string" },
+        "nodeId": { "type": "string" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "progress",
+            "message_delta",
+            "proposal",
+            "artifact",
+            "completed",
+            "failed",
+            "waiting_approval"
+          ]
+        },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "payload": {},
+        "schemaVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "TaskStepCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jobId",
+        "stepKey",
+        "inputHash",
+        "outputRefs",
+        "sideEffectState",
+        "attempt",
+        "occurredAt"
+      ],
+      "properties": {
+        "jobId": { "type": "string" },
+        "stepKey": { "type": "string" },
+        "inputHash": { "type": "string" },
+        "outputRefs": { "type": "array", "items": { "type": "string" } },
+        "sideEffectState": {
+          "type": "string",
+          "enum": ["none", "pending", "committed", "outcome_unknown"]
+        },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "occurredAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+/**
+ * 澄思学术设计 Token v1
+ * 唯一来源：0.需求/4.视觉设计规范.md §16
+ * 任何页面不得写死颜色、字号、间距；新增 Token 先改本文件。
+ */
+
+:root {
+  /* ---------- 颜色 ---------- */
+  --color-app-bg: #f3f5f8;
+  --color-canvas-bg: #f7f9fc;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f8fafc;
+  --color-surface-hover: #f1f5fa;
+  --color-border: #e5e9f0;
+  --color-border-strong: #cdd6e3;
+  --color-text-primary: #172033;
+  --color-text-secondary: #4d5b70;
+  --color-text-tertiary: #64748b;
+  --color-text-placeholder: #748096;
+
+  --color-primary: #3668d8;
+  --color-primary-hover: #315fc6;
+  --color-primary-soft: #edf3ff;
+  --color-primary-border: #c8d8fc;
+
+  --color-success: #1f754f;
+  --color-success-soft: #e9f7ef;
+  --color-warning: #8b5a11;
+  --color-warning-soft: #fff4df;
+  --color-danger: #b42318;
+  --color-danger-soft: #fff0ee;
+  --color-info: #315fc6;
+
+  /* 节点类型：仅用于小图标/窄标识，不作为整卡背景 */
+  --color-node-root: #334155;
+  --color-node-research: #3668d8;
+  --color-node-experiment: #0f766e;
+  --color-node-report: #7453b7;
+
+  /* ---------- 字体 ---------- */
+  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-mono: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-body: 14px;
+  --text-reading: 16px;
+  --text-section: 16px;
+  --text-title: 20px;
+
+  --leading-tight: 1.45;
+  --leading-body: 22px;
+  --leading-reading: 26px;
+
+  /* ---------- 间距（4px 基数，8px 节奏） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---------- 形状 ---------- */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-workspace: 14px;
+  --radius-pill: 999px;
+
+  --border-width: 1px;
+  --border-width-strong: 1.5px;
+
+  --shadow-node: 0 4px 14px rgba(23, 32, 51, 0.05);
+  --shadow-node-hover: 0 7px 20px rgba(23, 32, 51, 0.09);
+  --shadow-workspace: 0 16px 48px rgba(23, 32, 51, 0.16);
+
+  /* ---------- 尺寸 ---------- */
+  --size-titlebar: 48px;
+  --size-nav-rail: 64px;
+  --size-node-width: 260px;
+  --size-node-root-width: 290px;
+  --size-button: 36px;
+  --size-button-compact: 32px;
+  --size-workspace-min-width: 560px;
+  --size-workspace-min-height: 420px;
+  --size-workspace-default-width: 840px;
+  --size-workspace-default-height: 600px;
+  --size-chat-pane: 294px;
+  --size-reading-column: 760px;
+
+  /* ---------- 动效 ---------- */
+  --motion-fast: 140ms;
+  --motion-standard: 200ms;
+  --motion-panel: 240ms;
+  --motion-easing: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

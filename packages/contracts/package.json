@@ -1,0 +1,17 @@
+{
+  "name": "@cers/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "澄思学术跨进程契约 v1",
+  "main": "./ts/domain.ts",
+  "exports": {
+    ".": "./ts/domain.ts",
+    "./schema": "./schemas/domain.schema.json"
+  },
+  "files": [
+    "ts",
+    "schemas",
+    "python"
+  ]
+}

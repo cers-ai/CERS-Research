@@ -1,0 +1,51 @@
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+coverage/
+playwright-report/
+test-results/
+
+# --- Rust / Tauri ---
+target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/schemas/
+
+# --- Python / uv ---
+.venv/
+services/research-worker/build/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+uv-cache/
+
+# --- Local project state (never commit a user's Workspace data) ---
+.cers-data/
+Research Outputs/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# --- local scratch ---
+.tmp/
+0.需求/

@@ -6,6 +6,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { ChatPanel } from "../../components/ChatPanel";
+import { LiteraturePanel } from "../research/LiteraturePanel";
+import { SavedSourcesPanel } from "../research/SavedSourcesPanel";
 import type { GraphNodeDto } from "../../lib/ipc";
 import { NODE_STATE_LABEL, NODE_TYPE_ICON, NODE_TYPE_LABEL } from "./nodeMeta";
 
@@ -16,6 +19,7 @@ interface NodeWorkspaceProps {
 
 export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
   const [minimized, setMinimized] = useState(false);
+  const [sourcesVersion, setSourcesVersion] = useState(0);
   const [position, setPosition] = useState(() => {
     const width = Math.min(840, window.innerWidth - 96);
     return {
@@ -165,6 +169,25 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
             文献阅读、证据矩阵、数据分析、报告编辑与实验执行将在对应模块接入后出现在这里。
             当前工作区不展示任何模拟研究内容。
           </div>
+
+          {(node.type === "root" || node.type === "research") && (
+            <>
+              <h3 className="node-workspace-section">文献检索</h3>
+              <LiteraturePanel
+                nodeId={node.id}
+                refreshKey={sourcesVersion}
+                onSaved={() => setSourcesVersion((current) => current + 1)}
+              />
+              <SavedSourcesPanel
+                nodeId={node.id}
+                refreshKey={sourcesVersion}
+                onChanged={() => setSourcesVersion((current) => current + 1)}
+              />
+            </>
+          )}
+
+          <h3 className="node-workspace-section">科研伙伴</h3>
+          <ChatPanel nodeId={node.id} />
 
           <div className="node-workspace-actions">
             <button type="button" className="btn btn--compact" onClick={onClose}>

@@ -8,6 +8,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::domain::SidecarStatus;
 use crate::storage::now_iso;
@@ -58,6 +59,21 @@ impl SidecarManager {
 
     pub fn set_resource_dir(&mut self, directory: PathBuf) {
         self.resource_dir = Some(directory);
+    }
+
+    pub fn post_json(&mut self, path: &str, body: &Value) -> Result<String, String> {
+        let status = self.status();
+        if !status.ok {
+            return Err(status.message);
+        }
+        let port = self
+            .port
+            .ok_or_else(|| "Sidecar 尚未监听端口。".to_string())?;
+        let token = self
+            .token
+            .clone()
+            .ok_or_else(|| "Sidecar 会话令牌缺失。".to_string())?;
+        http_json_request(port, &token, path, body)
     }
 
     fn frozen_binary(&self) -> Option<PathBuf> {
@@ -315,6 +331,44 @@ fn http_request(port: u16, token: &str, method: &str, path: &str) -> Result<Stri
 
     if head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200") {
         Ok(body.to_string())
+    } else {
+        Err(format!(
+            "Sidecar 返回异常：{}",
+            head.lines().next().unwrap_or("未知状态")
+        ))
+    }
+}
+
+fn http_json_request(port: u16, token: &str, path: &str, body: &Value) -> Result<String, String> {
+    let serialized =
+        serde_json::to_string(body).map_err(|error| format!("序列化 Sidecar 请求失败：{error}"))?;
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1500))
+        .map_err(|error| format!("连接 Sidecar 失败：{error}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        serialized.len(),
+        serialized
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("发送 Sidecar 请求失败：{error}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("读取 Sidecar 响应失败：{error}"))?;
+
+    let (head, response_body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "Sidecar 响应格式无效。".to_string())?;
+
+    if head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200") {
+        Ok(response_body.to_string())
     } else {
         Err(format!(
             "Sidecar 返回异常：{}",

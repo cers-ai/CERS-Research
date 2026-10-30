@@ -15,7 +15,11 @@
 - M1 画布补全：节点编辑、节点删除（根节点保护）、连线删除、单步撤销、画布视口持久化。
 - 资产全文检索：文本类文件正文抽取、SQLite FTS5（trigram，中英文子串）、命中片段高亮、正文预览。
 - 模型与来源配置中心：Provider/Model 双层配置、角色路由、系统凭据库、6 个学术源、9 个新闻源、代理与隐私策略、真实连通测试。
-- 下一步：在应用内填入 DeepSeek API Key 并完成真实模型调用；随后接入研究节点 Agent 与 PDF/DOCX 解析。
+- 节点对话：真实 DeepSeek 调用（Rust → Python Sidecar → 模型），节点上下文注入、对话落库、错误回显；已验证 `model=deepseek-flash, content=你好`。
+- 选题页：读取真实模型配置与角色路由，模型可用时直接从一句想法开始对话；已移除硬编码的“模型尚未配置”提示。
+- 多源学术检索：OpenAlex / Crossref / arXiv / Semantic Scholar / PubMed / Europe PMC，归一化、按 DOI/标题去重、覆盖级别与来源失败状态可见；研究工作区可直接检索并复制引用。
+- 来源入库：检索结果可收藏到当前节点，SQLite 保存 SourceRecord 与节点关联，按 DOI/标题去重；对话系统提示会自动引用已收藏来源并标注覆盖级别。
+- 下一步：Evidence 片段/页码定位、模型工具调用、智能分解提案、PDF/DOCX 解析。
 
 ## 文档地图
 

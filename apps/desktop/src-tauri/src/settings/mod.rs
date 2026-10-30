@@ -406,6 +406,104 @@ fn load_settings(app: &tauri::AppHandle) -> Result<GlobalSettings, String> {
         .map_err(|error| format!("设置文件格式无效（{}）：{error}", path.display()))
 }
 
+pub(crate) struct ResolvedModel {
+    pub provider: ProviderConfig,
+    pub model: ModelConfig,
+    pub api_key: Option<String>,
+}
+
+pub(crate) fn load_settings_for_app(app: &tauri::AppHandle) -> Result<GlobalSettings, String> {
+    load_settings(app)
+}
+
+pub(crate) fn resolve_role(settings: &GlobalSettings, role: &str) -> Result<ResolvedModel, String> {
+    let reference = match role {
+        "conversation" => settings.roles.conversation.as_ref(),
+        "research" => settings.roles.research.as_ref(),
+        "planning" => settings.roles.planning.as_ref(),
+        "code" => settings.roles.code.as_ref(),
+        "report" => settings.roles.report.as_ref(),
+        _ => None,
+    }
+    .or(settings.roles.conversation.as_ref());
+
+    let (provider, model) = if let Some(reference) = reference {
+        let (provider_id, model_id) = reference
+            .split_once('/')
+            .ok_or_else(|| format!("角色路由引用无效：{reference}"))?;
+        let provider = settings
+            .providers
+            .iter()
+            .find(|item| item.id == provider_id)
+            .ok_or_else(|| format!("角色路由引用了不存在的服务：{provider_id}"))?;
+        let model = provider
+            .models
+            .iter()
+            .find(|item| item.id == model_id)
+            .ok_or_else(|| format!("角色路由引用了不存在的模型：{model_id}"))?;
+        (provider, model)
+    } else {
+        let provider = settings
+            .providers
+            .iter()
+            .find(|item| item.enabled && item.models.iter().any(|model| model.enabled))
+            .ok_or_else(|| "没有可用的模型服务，请先在设置中配置。".to_string())?;
+        let model = provider
+            .models
+            .iter()
+            .find(|item| item.enabled)
+            .ok_or_else(|| "模型服务没有启用的模型。".to_string())?;
+        (provider, model)
+    };
+
+    if !provider.enabled {
+        return Err(format!("模型服务 {} 尚未启用。", provider.name));
+    }
+    if !model.enabled {
+        return Err(format!("模型 {} 尚未启用。", model.display_name));
+    }
+    if matches!(provider.protocol.as_str(), "anthropic" | "gemini") {
+        return Err("该原生协议适配器尚未接入。".to_string());
+    }
+
+    let api_key = get_secret("model", &provider.id);
+    if provider.protocol != "ollama" && api_key.is_none() {
+        return Err("尚未配置 API Key，请先在设置 → 模型服务中保存密钥。".to_string());
+    }
+
+    Ok(ResolvedModel {
+        provider: provider.clone(),
+        model: model.clone(),
+        api_key,
+    })
+}
+
+pub(crate) fn academic_sources_payload(settings: &GlobalSettings) -> Vec<serde_json::Value> {
+    settings
+        .sources
+        .iter()
+        .filter(|source| source.category == "academic" && source.enabled)
+        .map(|source| {
+            serde_json::json!({
+                "id": source.id,
+                "name": source.name,
+                "driver": source.driver,
+                "url": source.url,
+                "apiKey": get_secret("source", &source.id),
+                "contactEmail": source.contact_email,
+                "language": source.language
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn network_payload(settings: &GlobalSettings) -> serde_json::Value {
+    serde_json::json!({
+        "proxyUrl": settings.network.proxy_url,
+        "timeoutSeconds": settings.network.timeout_seconds
+    })
+}
+
 fn write_settings(path: &PathBuf, settings: &GlobalSettings) -> Result<(), String> {
     validate_settings(settings)?;
     let text = serde_json::to_string_pretty(settings)
@@ -1038,5 +1136,99 @@ mod tests {
             "test-secret"
         );
         entry.delete_credential().expect("delete credential");
+    }
+
+    /// 手动烟雾测试：需要本机已配置 DeepSeek API Key。
+    /// 运行 `cargo test real_chat_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_chat_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+        let resolved = resolve_role(&settings, "research").expect("resolve model");
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let payload = serde_json::json!({
+            "provider": {
+                "baseUrl": resolved.provider.base_url,
+                "protocol": resolved.provider.protocol,
+                "proxy": resolved.provider.proxy,
+                "timeoutSeconds": resolved.provider.timeout_seconds
+            },
+            "modelId": resolved.model.model_id,
+            "messages": [{"role": "user", "content": "只回复两个字：你好"}],
+            "apiKey": resolved.api_key,
+            "maxTokens": 512,
+            "temperature": 0.2
+        });
+
+        let reply = manager.post_json("/chat", &payload).expect("sidecar chat");
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        println!(
+            "model={} content={}",
+            value
+                .get("model")
+                .and_then(|item| item.as_str())
+                .unwrap_or(""),
+            value
+                .get("content")
+                .and_then(|item| item.as_str())
+                .unwrap_or("")
+        );
+        manager.shutdown();
+    }
+
+    /// 手动烟雾测试：需要本机已配置学术来源。
+    /// 运行 `cargo test real_source_search_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_source_search_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+
+        let payload = serde_json::json!({
+            "query": "urban green space heat island",
+            "maxResults": 3,
+            "sources": academic_sources_payload(&settings),
+            "network": network_payload(&settings)
+        });
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let reply = manager
+            .post_json("/sources/search", &payload)
+            .expect("sidecar search");
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        println!(
+            "results={} statuses={}",
+            value
+                .get("results")
+                .and_then(|item| item.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0),
+            value
+                .get("sourceStatuses")
+                .and_then(|item| item.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0)
+        );
+        manager.shutdown();
     }
 }

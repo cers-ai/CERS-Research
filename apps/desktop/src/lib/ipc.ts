@@ -179,6 +179,90 @@ export interface ConnectionTestResult {
   detail: string | null;
 }
 
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  body: string;
+  createdAt: string;
+}
+
+export interface ConversationReply {
+  messages: ChatMessage[];
+  model: string;
+  usage: Record<string, unknown> | null;
+}
+
+export interface AcademicSourceStatus {
+  id: string;
+  name: string;
+  ok: boolean;
+  count: number;
+  error: string | null;
+  latencyMs: number;
+}
+
+export interface AcademicRecord {
+  id: string;
+  externalId: string | null;
+  provider: string;
+  providerName: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  url: string | null;
+  abstract: string | null;
+  coverage: "metadata_only" | "abstract_only" | "fulltext" | "unavailable";
+  type: string;
+  alsoFoundIn: string[];
+  retrievedAt: string;
+}
+
+export interface AcademicSearchResponse {
+  ok: boolean;
+  query: string;
+  results: AcademicRecord[];
+  sourceStatuses: AcademicSourceStatus[];
+  retrievedAt: string;
+  message: string | null;
+}
+
+export interface SavedSource {
+  id: string;
+  externalId: string | null;
+  provider: string;
+  providerName: string;
+  doi: string | null;
+  url: string | null;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  abstract: string | null;
+  coverage: string;
+  recordType: string | null;
+  retrievedAt: string | null;
+  createdAt: string;
+}
+
+export interface SaveSourceInput {
+  provider: string;
+  providerName: string;
+  externalId?: string | null;
+  doi?: string | null;
+  url?: string | null;
+  title: string;
+  authors: string[];
+  year?: number | null;
+  venue?: string | null;
+  abstract?: string | null;
+  coverage: string;
+  recordType?: string | null;
+  retrievedAt?: string | null;
+  nodeId?: string | null;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -288,4 +372,56 @@ export async function testSource(
   sourceId: string,
 ): Promise<ConnectionTestResult> {
   return invoke<ConnectionTestResult>("test_source", { sourceId });
+}
+
+export async function getConversation(nodeId: string): Promise<ChatMessage[]> {
+  return invoke<ChatMessage[]>("get_conversation", { nodeId });
+}
+
+export async function sendNodeMessage(
+  nodeId: string,
+  message: string,
+): Promise<ConversationReply> {
+  return invoke<ConversationReply>("send_node_message", {
+    input: { nodeId, message },
+  });
+}
+
+export async function searchAcademicSources(
+  query: string,
+  yearFrom?: number,
+  yearTo?: number,
+): Promise<AcademicSearchResponse> {
+  return invoke<AcademicSearchResponse>("search_academic_sources", {
+    query,
+    yearFrom: yearFrom ?? null,
+    yearTo: yearTo ?? null,
+  });
+}
+
+export async function saveAcademicSource(
+  input: SaveSourceInput,
+): Promise<SavedSource> {
+  return invoke<SavedSource>("save_academic_source", { input });
+}
+
+export async function listSavedSources(
+  nodeId?: string,
+  query?: string,
+): Promise<SavedSource[]> {
+  return invoke<SavedSource[]>("list_saved_sources", {
+    nodeId: nodeId ?? null,
+    query: query ?? null,
+  });
+}
+
+export async function removeSavedSource(
+  nodeId: string,
+  sourceId: string,
+): Promise<void> {
+  return invoke<void>("remove_saved_source", { nodeId, sourceId });
+}
+
+export async function deleteSavedSource(sourceId: string): Promise<void> {
+  return invoke<void>("delete_saved_source", { sourceId });
 }

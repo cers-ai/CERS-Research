@@ -9,7 +9,9 @@ use thiserror::Error;
 use crate::domain::WorkspaceInfo;
 
 pub mod assets;
+pub mod chat;
 pub mod graph;
+pub mod sources;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -265,6 +267,52 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             started_at  TEXT,
             finished_at TEXT,
             FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL,
+            node_id     TEXT NOT NULL,
+            role        TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+            body        TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_conversation_node
+            ON conversation(node_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS source_record (
+            id             TEXT PRIMARY KEY,
+            project_id     TEXT NOT NULL,
+            provider       TEXT NOT NULL,
+            provider_name  TEXT NOT NULL,
+            external_id    TEXT,
+            dedup_key      TEXT NOT NULL,
+            doi            TEXT,
+            url            TEXT,
+            title          TEXT NOT NULL,
+            authors_json   TEXT NOT NULL DEFAULT '[]',
+            year           INTEGER,
+            venue          TEXT,
+            abstract       TEXT,
+            coverage       TEXT NOT NULL
+                           CHECK (coverage IN ('metadata_only','abstract_only','fulltext','unavailable')),
+            record_type    TEXT,
+            retrieved_at   TEXT,
+            created_at     TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            UNIQUE (project_id, dedup_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS source_node_link (
+            source_id   TEXT NOT NULL,
+            node_id     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (source_id, node_id),
+            FOREIGN KEY (source_id) REFERENCES source_record(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS job_event (

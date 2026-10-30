@@ -14,10 +14,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+import httpx
+
 from . import __version__
+from .sources import search_sources
 
 CONTRACT_VERSION = 1
 _BIND_HOST = "127.0.0.1"
+_MAX_BODY_BYTES = 1_000_000
 
 
 def _runtime_payload() -> dict[str, Any]:
@@ -48,8 +52,39 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/shutdown":
             self._send_json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
-        else:
-            self._send_json(404, {"ok": False, "error": "not_found"})
+            return
+
+        if self.path in ("/chat", "/sources/search"):
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if self.path == "/chat":
+                self._send_json(200, _chat(payload))
+            else:
+                self._send_json(200, search_sources(payload))
+            return
+
+        self._send_json(404, {"ok": False, "error": "not_found"})
+
+    def _read_json_body(self) -> dict[str, Any] | None:
+        length_header = self.headers.get("Content-Length", "0")
+        try:
+            length = int(length_header)
+        except ValueError:
+            self._send_json(400, {"ok": False, "message": "Content-Length 无效。"})
+            return None
+        if length <= 0 or length > _MAX_BODY_BYTES:
+            self._send_json(413, {"ok": False, "message": "请求体为空或过大。"})
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "message": "请求体不是有效 JSON。"})
+            return None
+        if not isinstance(payload, dict):
+            self._send_json(400, {"ok": False, "message": "请求体必须是 JSON 对象。"})
+            return None
+        return payload
 
     def _authorized(self) -> bool:
         expected = f"Bearer {getattr(self.server, 'auth_token', '')}"
@@ -110,3 +145,92 @@ def serve(token: str) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def chat_endpoint(base_url: str, protocol: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if protocol == "ollama" and not base.endswith("/v1"):
+        return f"{base}/v1/chat/completions"
+    return f"{base}/chat/completions"
+
+
+def _chat(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = payload.get("provider")
+    messages = payload.get("messages")
+    model_id = str(payload.get("modelId") or "").strip()
+
+    if not isinstance(provider, dict) or not model_id:
+        return {"ok": False, "message": "缺少模型服务或模型 ID。"}
+    if not isinstance(messages, list) or not messages:
+        return {"ok": False, "message": "缺少对话消息。"}
+
+    base_url = str(provider.get("baseUrl") or "").strip()
+    if not base_url.startswith(("http://", "https://")):
+        return {"ok": False, "message": "模型服务 Base URL 无效。"}
+
+    protocol = str(provider.get("protocol") or "openai_compatible")
+    endpoint = chat_endpoint(base_url, protocol)
+    api_key = payload.get("apiKey")
+    timeout = float(provider.get("timeoutSeconds") or 90)
+    proxy = provider.get("proxy") or None
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "ChengsiAcademic/0.1",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    request_body = {
+        "model": model_id,
+        "messages": messages,
+        "stream": False,
+        "max_tokens": int(payload.get("maxTokens") or 2048),
+        "temperature": float(payload.get("temperature") or 0.4),
+    }
+
+    try:
+        with httpx.Client(timeout=timeout, proxy=proxy) as client:
+            response = client.post(endpoint, headers=headers, json=request_body)
+    except httpx.RequestError as exc:
+        return {"ok": False, "message": f"网络请求失败：{exc}"}
+
+    if response.status_code >= 400:
+        return {
+            "ok": False,
+            "statusCode": response.status_code,
+            "message": _response_error(response) or f"模型服务返回 HTTP {response.status_code}",
+        }
+
+    try:
+        data = response.json()
+    except ValueError:
+        return {"ok": False, "message": "模型服务返回了非 JSON 响应。"}
+
+    try:
+        content = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return {"ok": False, "message": "模型响应缺少 choices[0].message.content。"}
+
+    return {
+        "ok": True,
+        "content": str(content),
+        "model": str(data.get("model") or model_id),
+        "usage": data.get("usage"),
+    }
+
+
+def _response_error(response: httpx.Response) -> str | None:
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        return str(message) if message else None
+    if isinstance(error, str):
+        return error
+    return None

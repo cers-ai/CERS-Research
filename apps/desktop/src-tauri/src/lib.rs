@@ -85,6 +85,7 @@ pub fn run() {
             commands::suggest_report_outline,
             commands::suggest_report_changes,
             commands::apply_report_changes,
+            commands::list_pending_report_changes,
             commands::get_report,
             commands::save_report,
             commands::list_report_revisions,

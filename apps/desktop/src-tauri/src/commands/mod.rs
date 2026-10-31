@@ -968,6 +968,16 @@ pub fn apply_report_changes(
 }
 
 #[tauri::command]
+pub fn list_pending_report_changes(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ReportChangeProposalView>, String> {
+    let workspace = current_workspace(&state)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    reports::list_pending_change_proposals(&workspace, &node_id)
+}
+
+#[tauri::command]
 pub fn get_report(node_id: String, state: State<'_, AppState>) -> Result<ReportDocument, String> {
     let workspace = current_workspace(&state)?;
     reports::ensure_report_node(&workspace, &node_id)?;

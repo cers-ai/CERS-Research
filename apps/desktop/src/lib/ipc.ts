@@ -641,6 +641,12 @@ export async function suggestReportChanges(
   });
 }
 
+export async function listPendingReportChanges(
+  nodeId: string,
+): Promise<ReportChangeProposal[]> {
+  return invoke<ReportChangeProposal[]>("list_pending_report_changes", { nodeId });
+}
+
 export async function applyReportChanges(
   nodeId: string,
   proposalId: string,

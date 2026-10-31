@@ -6,6 +6,7 @@ import {
   exportReportDocument,
   exportReportMarkdown,
   getReport,
+  listPendingReportChanges,
   listReportRevisions,
   listSavedSources,
   saveReport,
@@ -47,6 +48,7 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outline, setOutline] = useState<ReportOutline | null>(null);
   const [outlineError, setOutlineError] = useState<string | null>(null);
+  const [pending, setPending] = useState<ReportChangeProposal | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const loadRevisions = useCallback(async () => {
@@ -54,6 +56,15 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       setRevisions(await listReportRevisions(nodeId));
     } catch {
       // 版本列表读取失败不阻塞正文编辑。
+    }
+  }, [nodeId]);
+
+  const refreshPending = useCallback(async () => {
+    try {
+      const items = await listPendingReportChanges(nodeId);
+      setPending(items[0] ?? null);
+    } catch {
+      setPending(null);
     }
   }, [nodeId]);
 
@@ -74,11 +85,12 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
         }
       });
     void loadRevisions();
+    void refreshPending();
 
     return () => {
       cancelled = true;
     };
-  }, [nodeId, loadRevisions]);
+  }, [nodeId, loadRevisions, refreshPending]);
 
   const save = useCallback(async () => {
     if (!report || saving) {
@@ -292,8 +304,10 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       setAiOpen(false);
       setNotice(`已应用 ${accepted.size} 项修改，报告更新为 v${result.document.revision}`);
       void loadRevisions();
+      void refreshPending();
     } catch (cause) {
       setAiError(toMessage(cause));
+      void refreshPending();
     } finally {
       setApplying(false);
     }
@@ -376,6 +390,26 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
 
       {error && <div className="canvas-error">{error}</div>}
       {notice && <div className="settings-notice">{notice}</div>}
+
+      {pending && !aiOpen && (
+        <div className="report-pending">
+          <span>
+            有未处理的修订提案（基于 v{pending.baseRevision}）：{pending.summary}
+          </span>
+          <button
+            type="button"
+            className="btn btn--compact"
+            onClick={() => {
+              setProposal(pending);
+              setAccepted(new Set());
+              setAiError(null);
+              setAiOpen(true);
+            }}
+          >
+            查看
+          </button>
+        </div>
+      )}
 
       <textarea
         ref={editorRef}
@@ -504,7 +538,10 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
               ? "AI 只提供局部替换建议；勾选后才会写入正文，未选中的内容保持原样。"
               : "说明希望如何修订。AI 会返回逐项局部修改，而不是重写整篇。"
           }
-          onClose={() => setAiOpen(false)}
+          onClose={() => {
+            setAiOpen(false);
+            void refreshPending();
+          }}
           footer={
             proposal ? (
               <>

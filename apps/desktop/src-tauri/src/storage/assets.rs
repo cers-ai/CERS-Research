@@ -83,7 +83,20 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
-            !(entry.file_type().is_dir() && is_excluded_component(&name))
+            if entry.file_type().is_dir() && is_excluded_component(&name) {
+                return false;
+            }
+            if entry.file_type().is_dir() {
+                let relative = entry
+                    .path()
+                    .strip_prefix(&root)
+                    .map(normalize_relative)
+                    .unwrap_or_default();
+                if relative == "Research Outputs/backups" {
+                    return false;
+                }
+            }
+            true
         });
 
     for entry in walker {

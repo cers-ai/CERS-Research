@@ -411,6 +411,46 @@ pub fn apply_report_changes(
     ))
 }
 
+pub fn list_pending_change_proposals(
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+) -> Result<Vec<ReportChangeProposalView>, String> {
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT node_id, status, base_revision, payload_json, id
+             FROM report_change_proposal
+             WHERE project_id = ?1 AND node_id = ?2 AND status = 'pending'
+             ORDER BY created_at DESC",
+        )
+        .map_err(|error| format!("读取待处理修改提案失败：{error}"))?;
+    let rows = statement
+        .query_map(params![workspace.project_id, node_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|error| format!("读取待处理修改提案失败：{error}"))?;
+
+    let mut proposals = Vec::new();
+    for row in rows {
+        let (node_id, status, base_revision, payload_json, id) =
+            row.map_err(|error| format!("读取待处理修改提案失败：{error}"))?;
+        proposals.push(proposal_from_payload(
+            id,
+            node_id,
+            status,
+            base_revision,
+            &payload_json,
+        ));
+    }
+    Ok(proposals)
+}
+
 fn load_change_proposal(
     workspace: &WorkspaceInfo,
     proposal_id: &str,
@@ -437,8 +477,24 @@ fn load_change_proposal(
     let Some((node_id, status, base_revision, payload_json, id)) = row else {
         return Err("修改提案不存在。".to_string());
     };
+    Ok(proposal_from_payload(
+        id,
+        node_id,
+        status,
+        base_revision,
+        &payload_json,
+    ))
+}
+
+fn proposal_from_payload(
+    id: String,
+    node_id: String,
+    status: String,
+    base_revision: i64,
+    payload_json: &str,
+) -> ReportChangeProposalView {
     let payload: serde_json::Value =
-        serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
+        serde_json::from_str(payload_json).unwrap_or(serde_json::Value::Null);
     let summary = payload
         .get("summary")
         .and_then(|value| value.as_str())
@@ -450,14 +506,14 @@ fn load_change_proposal(
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
 
-    Ok(ReportChangeProposalView {
+    ReportChangeProposalView {
         id,
         node_id,
         base_revision,
         status,
         summary,
         changes,
-    })
+    }
 }
 
 fn mark_proposal(workspace: &WorkspaceInfo, proposal_id: &str, status: &str) -> Result<(), String> {
@@ -574,6 +630,10 @@ mod tests {
         )
         .expect("保存提案");
 
+        let pending = list_pending_change_proposals(&workspace, &node_id).expect("列出待处理提案");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, proposal.id);
+
         let (document, applied) =
             apply_report_changes(&workspace, &node_id, &proposal.id, &["c1".to_string()])
                 .expect("应用选中修改");
@@ -587,5 +647,8 @@ mod tests {
         assert!(
             apply_report_changes(&workspace, &node_id, &proposal.id, &["c2".to_string()]).is_err()
         );
+        assert!(list_pending_change_proposals(&workspace, &node_id)
+            .expect("再次列出待处理提案")
+            .is_empty());
     }
 }

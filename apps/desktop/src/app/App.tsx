@@ -111,6 +111,10 @@ export function App() {
           onOpenCanvas={() => setView("canvas")}
           onOpenTopic={() => setView("topic")}
           onOpenAssets={() => setView("assets")}
+          onRestored={(restored) => {
+            setRuntime((current) => (current ? { ...current, workspace: restored } : current));
+            setView("overview");
+          }}
         />
       )}
       {view === "topic" && (

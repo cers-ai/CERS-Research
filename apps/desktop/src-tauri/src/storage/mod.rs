@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::domain::WorkspaceInfo;
 
 pub mod assets;
+pub mod backup;
 pub mod chat;
 pub mod definition;
 pub mod experiments;

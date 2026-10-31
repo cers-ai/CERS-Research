@@ -54,6 +54,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::runtime_info,
             commands::open_workspace,
+            commands::create_project_backup,
+            commands::restore_project_backup,
             commands::close_workspace,
             commands::sidecar_self_check,
             commands::get_graph,

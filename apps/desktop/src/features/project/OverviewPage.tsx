@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import {
+  createProjectBackup,
   getResearchDefinition,
+  restoreProjectBackup,
   type ResearchDefinition,
   type RuntimeInfo,
   type WorkspaceInfo,
@@ -16,6 +19,7 @@ interface OverviewPageProps {
   onOpenCanvas: () => void;
   onOpenTopic: () => void;
   onOpenAssets: () => void;
+  onRestored: (workspace: WorkspaceInfo) => void;
 }
 
 export function OverviewPage({
@@ -27,8 +31,11 @@ export function OverviewPage({
   onOpenCanvas,
   onOpenTopic,
   onOpenAssets,
+  onRestored,
 }: OverviewPageProps) {
   const [definition, setDefinition] = useState<ResearchDefinition | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!workspace) {
@@ -80,6 +87,52 @@ export function OverviewPage({
   }
 
   const displayName = workspace.alias || workspace.name;
+
+  const handleBackup = async () => {
+    setBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const path = await createProjectBackup();
+      setBackupNotice(`备份已生成：${path}`);
+    } catch (cause) {
+      setBackupNotice(toMessage(cause));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    setBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const archive = await open({
+        title: "选择项目备份",
+        multiple: false,
+        directory: false,
+        filters: [{ name: "项目备份", extensions: ["zip"] }],
+      });
+      const archivePath = Array.isArray(archive) ? archive[0] : archive;
+      if (!archivePath) {
+        return;
+      }
+      const folder = await open({
+        title: "选择空的恢复文件夹",
+        multiple: false,
+        directory: true,
+      });
+      const destination = Array.isArray(folder) ? folder[0] : folder;
+      if (!destination) {
+        return;
+      }
+      const restored = await restoreProjectBackup(String(archivePath), String(destination));
+      onRestored(restored);
+      setBackupNotice(`已恢复到 ${restored.workspacePath}`);
+    } catch (cause) {
+      setBackupNotice(toMessage(cause));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
 
   return (
     <section className="page">
@@ -181,6 +234,33 @@ export function OverviewPage({
             </div>
           </article>
 
+          <article className="card card--pad">
+            <h2 className="section-title">备份与恢复</h2>
+            <p className="muted">
+              备份包含项目配置、数据库快照、研究输出与 Workspace 文件。恢复时需要选择一个空的
+              新文件夹；恢复后资产、节点与报告引用保持一致。
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="btn btn--compact"
+                disabled={backupBusy}
+                onClick={() => void handleBackup()}
+              >
+                {backupBusy ? "处理中…" : "创建项目备份"}
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--compact"
+                disabled={backupBusy}
+                onClick={() => void handleRestore()}
+              >
+                从备份恢复…
+              </button>
+            </div>
+            {backupNotice && <p className="hint">{backupNotice}</p>}
+          </article>
+
           {runtime && (
             <article className="card card--pad">
               <div className="section-head">
@@ -214,6 +294,16 @@ function SidecarTag({ ok }: { ok: boolean }) {
       {ok ? "Python 运行时可用" : "Python 运行时未就绪"}
     </span>
   );
+}
+
+function toMessage(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  if (typeof cause === "string") {
+    return cause;
+  }
+  return "备份操作失败，请稍后重试。";
 }
 
 function formatTimestamp(value: string): string {

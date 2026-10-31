@@ -408,6 +408,20 @@ export async function closeWorkspace(): Promise<void> {
   return invoke<void>("close_workspace");
 }
 
+export async function createProjectBackup(): Promise<string> {
+  return invoke<string>("create_project_backup");
+}
+
+export async function restoreProjectBackup(
+  archivePath: string,
+  destination: string,
+): Promise<WorkspaceInfo> {
+  return invoke<WorkspaceInfo>("restore_project_backup", {
+    archivePath,
+    destination,
+  });
+}
+
 export async function runSidecarSelfCheck(): Promise<SidecarStatus> {
   return invoke<SidecarStatus>("sidecar_self_check");
 }

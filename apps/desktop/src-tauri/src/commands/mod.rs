@@ -89,6 +89,31 @@ pub fn close_workspace(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn create_project_backup(state: State<'_, AppState>) -> Result<String, String> {
+    let workspace = current_workspace(&state)?;
+    storage::backup::create_backup(&workspace)
+}
+
+#[tauri::command]
+pub fn restore_project_backup(
+    archive_path: String,
+    destination: String,
+    state: State<'_, AppState>,
+) -> Result<WorkspaceInfo, String> {
+    if archive_path.trim().is_empty() || destination.trim().is_empty() {
+        return Err("请提供备份文件与目标文件夹。".to_string());
+    }
+    let restored =
+        storage::backup::restore_backup(Path::new(&archive_path), Path::new(&destination))?;
+    let mut guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "应用状态不可用，请重启应用。".to_string())?;
+    *guard = Some(restored.clone());
+    Ok(restored)
+}
+
+#[tauri::command]
 pub fn sidecar_self_check(state: State<'_, AppState>) -> SidecarStatus {
     match state.sidecar.lock() {
         Ok(mut manager) => manager.status(),

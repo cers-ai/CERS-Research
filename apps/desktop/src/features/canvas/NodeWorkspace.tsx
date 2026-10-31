@@ -7,6 +7,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { ChatPanel } from "../../components/ChatPanel";
+import { AssetLinksPanel } from "../research/AssetLinksPanel";
 import { ExperimentPanel } from "../research/ExperimentPanel";
 import { LiteraturePanel } from "../research/LiteraturePanel";
 import { ReportPanel } from "../research/ReportPanel";
@@ -194,6 +195,8 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
                 refreshKey={sourcesVersion}
                 onChanged={() => setSourcesVersion((current) => current + 1)}
               />
+              <h3 className="node-workspace-section">本地资料引用</h3>
+              <AssetLinksPanel nodeId={node.id} />
             </>
           )}
 
@@ -210,6 +213,8 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
                 refreshKey={sourcesVersion}
                 onChanged={() => setSourcesVersion((current) => current + 1)}
               />
+              <h3 className="node-workspace-section">本地资料引用</h3>
+              <AssetLinksPanel nodeId={node.id} />
             </>
           )}
 

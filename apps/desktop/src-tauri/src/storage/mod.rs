@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::domain::WorkspaceInfo;
 
+pub mod asset_links;
 pub mod assets;
 pub mod backup;
 pub mod chat;
@@ -363,6 +364,17 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             updated_at     TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
             FOREIGN KEY (report_id) REFERENCES report_document(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS asset_node_link (
+            project_id  TEXT NOT NULL,
+            asset_id    TEXT NOT NULL,
+            node_id     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (asset_id, node_id),
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            FOREIGN KEY (asset_id) REFERENCES asset(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS experiment_run (

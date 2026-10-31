@@ -5,6 +5,7 @@ use tauri::{Manager, State};
 
 use crate::domain::{RuntimeInfo, SidecarStatus, WorkspaceInfo};
 use crate::settings;
+use crate::storage::asset_links::{self as asset_links, LinkedAsset};
 use crate::storage::assets::{self, AssetItem, ScanSummary};
 use crate::storage::chat::{self, ChatMessage, NodeChatContext};
 use crate::storage::definition::{
@@ -86,6 +87,35 @@ pub fn close_workspace(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|_| "应用状态不可用，请重启应用。".to_string())?;
     *guard = None;
     Ok(())
+}
+
+#[tauri::command]
+pub fn link_asset_to_node(
+    node_id: String,
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let workspace = current_workspace(&state)?;
+    asset_links::link_asset(&workspace, &node_id, &asset_id)
+}
+
+#[tauri::command]
+pub fn unlink_asset_from_node(
+    node_id: String,
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let workspace = current_workspace(&state)?;
+    asset_links::unlink_asset(&workspace, &node_id, &asset_id)
+}
+
+#[tauri::command]
+pub fn list_node_assets(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<LinkedAsset>, String> {
+    let workspace = current_workspace(&state)?;
+    asset_links::list_linked_assets(&workspace, &node_id)
 }
 
 #[tauri::command]
@@ -942,7 +972,8 @@ pub async fn send_node_message(
     chat::append_message(&workspace, &input.node_id, "user", &message)?;
     let history = chat::load_messages(&workspace, &input.node_id, 12)?;
     let saved_sources = stored_sources::linked_sources_for_chat(&workspace, &input.node_id, 20)?;
-    let system = system_prompt(&context, &saved_sources);
+    let linked_assets = asset_links::linked_excerpts(&workspace, &input.node_id, 4, 1_200)?;
+    let system = system_prompt(&context, &saved_sources, &linked_assets);
     let mut messages = vec![serde_json::json!({
         "role": "system",
         "content": system
@@ -1017,7 +1048,11 @@ pub async fn send_node_message(
     })
 }
 
-fn system_prompt(context: &NodeChatContext, sources: &[SavedSource]) -> String {
+fn system_prompt(
+    context: &NodeChatContext,
+    sources: &[SavedSource],
+    linked_assets: &[(String, String)],
+) -> String {
     let type_label = match context.node_type.as_str() {
         "root" => "总课题",
         "research" => "研究",
@@ -1075,6 +1110,19 @@ fn system_prompt(context: &NodeChatContext, sources: &[SavedSource]) -> String {
             ));
         }
         prompt.push_str("引用已收藏来源时必须说明覆盖级别；不要为仅题录或仅摘要的来源生成页码。\n");
+    }
+
+    if !linked_assets.is_empty() {
+        prompt.push_str("\n本节点引用的本地资料（摘录可能不完整，不得声称已通读全文）：\n");
+        for (index, (name, excerpt)) in linked_assets.iter().enumerate() {
+            prompt.push_str(&format!(
+                "{}. 《{}》：{}\n",
+                index + 1,
+                name,
+                excerpt.replace('\n', " ")
+            ));
+        }
+        prompt.push_str("只能基于上述摘录陈述本地资料内容；需要更多内容时请让用户打开原文。\n");
     }
 
     prompt

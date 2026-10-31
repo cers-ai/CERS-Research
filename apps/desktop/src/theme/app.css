@@ -2162,6 +2162,44 @@ code,
   text-overflow: ellipsis;
 }
 
+.asset-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asset-link-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.asset-link-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.asset-link-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.asset-link-main strong,
+.asset-link-main .muted {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .asset-tags {
   display: flex;
   gap: 6px;

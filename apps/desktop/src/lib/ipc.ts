@@ -96,6 +96,15 @@ export interface AssetItem {
   page: number | null;
 }
 
+export interface LinkedAsset {
+  id: string;
+  name: string;
+  relativePath: string;
+  kind: string;
+  status: string;
+  hasText: boolean;
+}
+
 export interface ScanSummary {
   scanned: number;
   added: number;
@@ -475,6 +484,18 @@ export async function listAssets(query?: string, kind?: string): Promise<AssetIt
     query: query ?? null,
     kind: kind ?? null,
   });
+}
+
+export async function linkAssetToNode(nodeId: string, assetId: string): Promise<void> {
+  return invoke<void>("link_asset_to_node", { nodeId, assetId });
+}
+
+export async function unlinkAssetFromNode(nodeId: string, assetId: string): Promise<void> {
+  return invoke<void>("unlink_asset_from_node", { nodeId, assetId });
+}
+
+export async function listNodeAssets(nodeId: string): Promise<LinkedAsset[]> {
+  return invoke<LinkedAsset[]>("list_node_assets", { nodeId });
 }
 
 export async function getAssetText(

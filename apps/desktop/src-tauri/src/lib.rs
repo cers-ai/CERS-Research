@@ -80,6 +80,7 @@ pub fn run() {
             commands::save_report,
             commands::list_report_revisions,
             commands::export_report_markdown,
+            commands::export_report_document,
             commands::save_academic_source,
             commands::list_saved_sources,
             commands::remove_saved_source,

@@ -565,6 +565,55 @@ pub fn export_report_markdown(
 }
 
 #[tauri::command]
+pub async fn export_report_document(
+    app: tauri::AppHandle,
+    node_id: String,
+    format: String,
+) -> Result<String, String> {
+    let workspace = workspace_for_app(&app)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    let format = format.to_lowercase();
+    let (content, title, path) = reports::export_target(&workspace, &node_id, &format)?;
+
+    let payload = serde_json::json!({
+        "content": content,
+        "title": title,
+        "format": format,
+        "path": path,
+    });
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/reports/export", &payload)
+    })
+    .await
+    .map_err(|error| format!("报告导出任务失败：{error}"))??;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|error| format!("报告导出响应无法解析：{error}"))?;
+    if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let message = parsed
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("报告导出失败。");
+        return Err(message.to_string());
+    }
+    let exported = parsed
+        .get("path")
+        .and_then(|item| item.as_str())
+        .map(str::to_string)
+        .unwrap_or(path);
+    if !Path::new(&exported).is_file() {
+        return Err("报告导出后未找到目标文件。".to_string());
+    }
+    Ok(exported)
+}
+
+#[tauri::command]
 pub fn save_academic_source(
     input: SaveSourceInput,
     state: State<'_, AppState>,

@@ -547,6 +547,13 @@ export async function exportReportMarkdown(nodeId: string): Promise<string> {
   return invoke<string>("export_report_markdown", { nodeId });
 }
 
+export async function exportReportDocument(
+  nodeId: string,
+  format: "docx" | "pdf",
+): Promise<string> {
+  return invoke<string>("export_report_document", { nodeId, format });
+}
+
 export async function runExperiment(
   nodeId: string,
   assetId: string,

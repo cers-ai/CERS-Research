@@ -190,6 +190,40 @@ pub fn list_revisions(
         .map_err(|error| format!("读取报告版本失败：{error}"))
 }
 
+pub fn export_target(
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    format: &str,
+) -> Result<(String, String, String), String> {
+    if !matches!(format, "docx" | "pdf") {
+        return Err("不支持的导出格式。".to_string());
+    }
+    let report = get_report(workspace, node_id)?;
+    if report.content_md.trim().is_empty() {
+        return Err("报告正文为空，无法导出。".to_string());
+    }
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    let title: String = connection
+        .query_row(
+            "SELECT title FROM node WHERE project_id = ?1 AND id = ?2",
+            params![workspace.project_id, node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("读取报告节点失败：{error}"))?;
+
+    let directory = Path::new(&workspace.workspace_path)
+        .join("Research Outputs")
+        .join("reports");
+    fs::create_dir_all(&directory).map_err(|error| format!("创建导出目录失败：{error}"))?;
+    let path = directory.join(format!(
+        "{}-r{}.{}",
+        safe_filename(&title),
+        report.revision,
+        format
+    ));
+    Ok((report.content_md, title, path.display().to_string()))
+}
+
 pub fn export_markdown(workspace: &WorkspaceInfo, node_id: &str) -> Result<String, String> {
     let report = get_report(workspace, node_id)?;
     if report.content_md.trim().is_empty() {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  exportReportDocument,
   exportReportMarkdown,
   getReport,
   listReportRevisions,
@@ -22,7 +23,7 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     try {
@@ -104,16 +105,19 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
     setNotice(`已载入 v${revision}，保存后生成新版本`);
   };
 
-  const exportMarkdown = async () => {
-    setExporting(true);
+  const exportReport = async (format: "md" | "docx" | "pdf") => {
+    setExporting(format);
     try {
-      const path = await exportReportMarkdown(nodeId);
+      const path =
+        format === "md"
+          ? await exportReportMarkdown(nodeId)
+          : await exportReportDocument(nodeId, format);
       setNotice(`已导出：${path}`);
       setError(null);
     } catch (cause) {
       setError(toMessage(cause));
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
@@ -150,14 +154,21 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
         >
           保存
         </button>
-        <button
-          type="button"
-          className="btn btn--compact"
-          disabled={exporting || !report}
-          onClick={() => void exportMarkdown()}
-        >
-          {exporting ? "导出中…" : "导出 Markdown"}
-        </button>
+        {(["md", "docx", "pdf"] as const).map((format) => (
+          <button
+            key={format}
+            type="button"
+            className="btn btn--compact"
+            disabled={Boolean(exporting) || !report}
+            onClick={() => void exportReport(format)}
+          >
+            {exporting === format
+              ? "导出中…"
+              : format === "md"
+                ? "导出 MD"
+                : `导出 ${format.toUpperCase()}`}
+          </button>
+        ))}
       </div>
 
       {error && <div className="canvas-error">{error}</div>}
@@ -175,7 +186,7 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       />
 
       <p className="hint">
-        正文自动保存并保留版本。当前版本支持 Markdown 导出；DOCX/PDF 导出将在文档渲染模块接入后开放。
+        正文自动保存并保留版本。可导出 Markdown、DOCX 与 PDF，文件保存在 Research Outputs/reports。
       </p>
     </div>
   );

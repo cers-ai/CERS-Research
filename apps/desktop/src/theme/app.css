@@ -2277,6 +2277,19 @@ code,
   word-break: break-word;
 }
 
+.asset-page-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asset-page-nav {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .asset-page + .asset-page {
   margin-top: 10px;
 }

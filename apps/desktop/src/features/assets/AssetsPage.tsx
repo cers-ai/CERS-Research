@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Modal } from "../../components/Modal";
 import {
@@ -335,7 +335,7 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
           {previewLoading ? (
             <p className="muted">正在读取正文…</p>
           ) : preview ? (
-            <AssetPreview text={preview} />
+            <AssetPreview text={preview} initialPage={selected.page} />
           ) : (
             <p className="hint">
               该文件暂无正文索引。扫描版 PDF 需要先 OCR，暂不能建立可检索文本；其他不支持的类型只做文件级管理。
@@ -354,28 +354,49 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
   );
 }
 
-function AssetPreview({ text }: { text: string }) {
+function AssetPreview({
+  text,
+  initialPage,
+}: {
+  text: string;
+  initialPage: number | null;
+}) {
+  const pages: Array<{ page: number; body: string }> = [];
   const parts = text.split(/〔澄思第 (\d+) 页〕/g);
-  const blocks: ReactNode[] = [];
-  const head = parts[0]?.trim();
-  if (head) {
-    blocks.push(
-      <pre className="asset-preview" key="head">
-        {head}
-      </pre>,
-    );
-  }
   for (let index = 1; index < parts.length; index += 2) {
-    const page = parts[index];
-    const body = parts[index + 1]?.trim() ?? "";
-    blocks.push(
-      <div className="asset-page" key={`page-${index}`}>
-        <span className="asset-page-marker">第 {page} 页</span>
-        <pre className="asset-preview">{body || "（本页没有可提取的文本）"}</pre>
-      </div>,
-    );
+    pages.push({ page: Number(parts[index]), body: parts[index + 1]?.trim() ?? "" });
   }
-  return <>{blocks.length > 0 ? blocks : <pre className="asset-preview">{text}</pre>}</>;
+  const [active, setActive] = useState<number | null>(initialPage);
+  useEffect(() => {
+    setActive(initialPage);
+  }, [text, initialPage]);
+
+  if (pages.length === 0) {
+    return <pre className="asset-preview">{text}</pre>;
+  }
+  const current = pages.find((item) => item.page === active) ?? pages[0];
+
+  return (
+    <div className="asset-page-view">
+      <div className="asset-page-nav">
+        <span className="muted">共 {pages.length} 页 · 只显示 PDF 文本层</span>
+        <select
+          aria-label="选择 PDF 页码"
+          value={current.page}
+          onChange={(event) => setActive(Number(event.target.value))}
+        >
+          {pages.map((item) => (
+            <option key={item.page} value={item.page}>
+              第 {item.page} 页
+            </option>
+          ))}
+        </select>
+      </div>
+      <pre className="asset-preview">
+        {current.body || "（本页没有可提取的文本）"}
+      </pre>
+    </div>
+  );
 }
 
 function stripPageMarkers(text: string): string {

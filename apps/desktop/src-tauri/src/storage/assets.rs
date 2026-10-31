@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -53,16 +53,24 @@ pub struct ScanSummary {
     pub scanned: usize,
     pub added: usize,
     pub updated: usize,
+    pub relinked: usize,
     pub missing: usize,
     pub skipped: usize,
     pub truncated: bool,
     pub duration_ms: u128,
 }
 
+struct ScannedFile {
+    relative: String,
+    kind: &'static str,
+    content: Option<String>,
+    fingerprint: Option<String>,
+}
+
 pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> {
     let started = Instant::now();
     let root = PathBuf::from(&workspace.workspace_path);
-    let mut files: Vec<(String, PathBuf, &'static str, Option<String>)> = Vec::new();
+    let mut files: Vec<ScannedFile> = Vec::new();
     let mut skipped = 0usize;
     let mut truncated = false;
 
@@ -115,7 +123,13 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
         }
 
         let content = extract_text(path);
-        files.push((relative, path.to_path_buf(), classify(path), content));
+        let fingerprint = fingerprint(path, content.as_deref());
+        files.push(ScannedFile {
+            relative,
+            kind: classify(path),
+            content,
+            fingerprint,
+        });
     }
 
     let mut connection = open_project_db(workspace).map_err(|error| error.to_string())?;
@@ -124,21 +138,91 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
         .map_err(|error| format!("无法开始资产索引事务：{error}"))?;
 
     let mut seen = HashSet::new();
+    let mut relinked_ids: HashSet<String> = HashSet::new();
     let mut added = 0usize;
     let mut updated = 0usize;
+    let mut relinked = 0usize;
     let now = now_iso();
 
-    for (relative, _, kind, content) in &files {
+    let current_paths: HashSet<&str> = files.iter().map(|file| file.relative.as_str()).collect();
+    let existing_rows: Vec<(String, String, Option<String>)> = {
+        let mut statement = transaction
+            .prepare("SELECT id, path, content_hash FROM asset WHERE project_id = ?1")
+            .map_err(|error| format!("读取资产列表失败：{error}"))?;
+        let rows = statement
+            .query_map(params![workspace.project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|error| format!("读取资产列表失败：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取资产列表失败：{error}"))?
+    };
+    let existing_by_path: HashMap<String, String> = existing_rows
+        .iter()
+        .map(|(id, path, _)| (path.clone(), id.clone()))
+        .collect();
+    let mut relinkable: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, path, content_hash) in &existing_rows {
+        if current_paths.contains(path.as_str()) {
+            continue;
+        }
+        if let Some(hash) = content_hash {
+            relinkable.entry(hash.clone()).or_default().push(id.clone());
+        }
+    }
+
+    for file in &files {
+        let relative = &file.relative;
+        let kind = file.kind;
+        let content = &file.content;
+        let fingerprint = file.fingerprint.as_deref();
         seen.insert(relative.clone());
 
-        let existing: Option<String> = transaction
-            .query_row(
-                "SELECT id FROM asset WHERE project_id = ?1 AND path = ?2",
-                params![workspace.project_id, relative],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| format!("读取资产索引失败：{error}"))?;
+        let existing = existing_by_path.get(relative).cloned();
+        let relocated = if existing.is_none() {
+            fingerprint
+                .and_then(|value| relinkable.get_mut(value))
+                .and_then(Vec::pop)
+        } else {
+            None
+        };
+
+        if let Some(id) = relocated {
+            let origin = if relative.starts_with("Research Outputs/") {
+                "output"
+            } else {
+                "workspace"
+            };
+            transaction
+                .execute(
+                    "UPDATE asset SET path = ?1, kind = ?2, status = 'relocated',
+                        content_hash = ?3, origin = ?4, updated_at = ?5
+                     WHERE id = ?6",
+                    params![relative, kind, fingerprint, origin, now, id],
+                )
+                .map_err(|error| format!("更新重定位资产失败：{error}"))?;
+            relinked_ids.insert(id.clone());
+            relinked += 1;
+
+            let name = Path::new(relative)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(relative);
+            transaction
+                .execute("DELETE FROM asset_fts WHERE asset_id = ?1", params![id])
+                .map_err(|error| format!("清理全文索引失败：{error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO asset_fts (asset_id, name, content) VALUES (?1, ?2, ?3)",
+                    params![id, name, content.as_deref().unwrap_or("")],
+                )
+                .map_err(|error| format!("写入全文索引失败：{error}"))?;
+            continue;
+        }
 
         let id = existing
             .clone()
@@ -152,13 +236,14 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
         transaction
             .execute(
                 "INSERT INTO asset (id, project_id, path, kind, status, content_hash, origin, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'indexed', NULL, ?5, ?6, ?6)
+                 VALUES (?1, ?2, ?3, ?4, 'indexed', ?5, ?6, ?7, ?7)
                  ON CONFLICT(project_id, path) DO UPDATE SET
                      kind = excluded.kind,
                      status = 'indexed',
+                     content_hash = excluded.content_hash,
                      origin = excluded.origin,
                      updated_at = excluded.updated_at",
-                params![id, workspace.project_id, relative, kind, origin, now],
+                params![id, workspace.project_id, relative, kind, fingerprint, origin, now],
             )
             .map_err(|error| format!("写入资产索引失败：{error}"))?;
 
@@ -199,7 +284,7 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
         };
 
         for (id, path) in existing {
-            if !seen.contains(&path) {
+            if !seen.contains(&path) && !relinked_ids.contains(&id) {
                 transaction
                     .execute(
                         "UPDATE asset SET status = 'missing', updated_at = ?1 WHERE id = ?2",
@@ -219,6 +304,7 @@ pub fn scan_workspace(workspace: &WorkspaceInfo) -> Result<ScanSummary, String> 
         scanned: files.len(),
         added,
         updated,
+        relinked,
         missing,
         skipped,
         truncated,
@@ -520,6 +606,30 @@ fn build_item(root: &Path, row: AssetRow) -> AssetItem {
         snippet: row.snippet,
         page: row.page,
     }
+}
+
+fn fingerprint(path: &Path, content: Option<&str>) -> Option<String> {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    if let Some(text) = content {
+        for byte in text.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        return Some(format!("t{hash:016x}"));
+    }
+
+    let size = fs::metadata(path).ok()?.len();
+    let mut buffer = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_TEXT_BYTES)
+        .read_to_end(&mut buffer)
+        .ok()?;
+    for byte in &buffer {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(format!("b{size}-{hash:016x}"))
 }
 
 fn extract_text(path: &Path) -> Option<String> {
@@ -850,6 +960,45 @@ mod tests {
 
         let missing = list_assets(&workspace, Some("paper"), None).expect("搜索缺失资产");
         assert_eq!(missing[0].status, "missing");
+    }
+
+    #[test]
+    fn relinks_moved_files_by_content_hash() {
+        let directory = tempfile::tempdir().expect("创建临时目录");
+        fs::write(
+            directory.path().join("notes.md"),
+            "城市绿地与热环境：移动后的文件仍应保留同一条资产记录。
+",
+        )
+        .expect("写入笔记样例");
+
+        let workspace = open_workspace(directory.path()).expect("打开项目");
+        let first = scan_workspace(&workspace).expect("首次扫描");
+        assert_eq!(first.added, 1);
+        let before = list_assets(&workspace, None, None).expect("列出资产");
+        let original_id = before[0].id.clone();
+
+        fs::create_dir_all(directory.path().join("archive")).expect("创建归档目录");
+        fs::rename(
+            directory.path().join("notes.md"),
+            directory.path().join("archive/renamed.md"),
+        )
+        .expect("移动文件");
+
+        let second = scan_workspace(&workspace).expect("再次扫描");
+        assert_eq!(second.relinked, 1);
+        assert_eq!(second.added, 0);
+        assert_eq!(second.missing, 0);
+
+        let after = list_assets(&workspace, None, None).expect("列出重定位资产");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, original_id);
+        assert_eq!(after[0].relative_path, "archive/renamed.md");
+        assert_eq!(after[0].status, "relocated");
+        let text = get_asset_text(&workspace, &original_id, None)
+            .expect("读取正文")
+            .expect("正文存在");
+        assert!(text.contains("城市绿地"));
     }
 
     #[test]

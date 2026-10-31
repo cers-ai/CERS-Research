@@ -100,6 +100,7 @@ export interface ScanSummary {
   scanned: number;
   added: number;
   updated: number;
+  relinked: number;
   missing: number;
   skipped: number;
   truncated: boolean;

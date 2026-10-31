@@ -202,7 +202,8 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
       {summary && (
         <div className={`scan-summary ${summary.truncated ? "is-warning" : ""}`}>
           已扫描 {summary.scanned} 个文件 · 新增 {summary.added} · 更新 {summary.updated} ·
-          缺失 {summary.missing} · 跳过 {summary.skipped} · {summary.durationMs} ms
+          重定位 {summary.relinked} · 缺失 {summary.missing} · 跳过 {summary.skipped} ·{" "}
+          {summary.durationMs} ms
           {summary.truncated && "（文件过多，本次仅索引前 5000 个）"}
         </div>
       )}
@@ -343,7 +344,8 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
 
           {selected.status === "missing" && (
             <div className="hint">
-              原始文件已不可访问。索引与关联关系仍保留；恢复文件后重新扫描即可。
+              原始文件已不可访问。索引与关联关系仍保留；把文件放回 Workspace 后重新扫描，
+              内容一致的文件会自动重定位并保留原资产 ID。
             </div>
           )}
         </Modal>

@@ -2171,6 +2171,25 @@ code,
   word-break: break-word;
 }
 
+.asset-page + .asset-page {
+  margin-top: 10px;
+}
+
+.asset-page-marker {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.asset-page .asset-preview {
+  max-height: 240px;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1100px) {

@@ -17,6 +17,7 @@ const MAX_DEPTH: usize = 12;
 const MAX_TEXT_BYTES: u64 = 1_048_576;
 const MAX_PREVIEW_CHARS: usize = 4_000;
 const MAX_SEARCH_RESULTS: usize = 200;
+const PAGE_MARKER_PREFIX: &str = "〔澄思第 ";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +33,7 @@ pub struct AssetItem {
     pub origin: String,
     pub created_at: String,
     pub snippet: Option<String>,
+    pub page: Option<u32>,
 }
 
 struct AssetRow {
@@ -42,6 +44,7 @@ struct AssetRow {
     origin: String,
     created_at: String,
     snippet: Option<String>,
+    page: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -275,6 +278,7 @@ pub fn list_assets(
                 origin,
                 created_at,
                 snippet: None,
+                page: None,
             },
         ));
     }
@@ -368,18 +372,24 @@ fn fts_search(
     let mut statement = connection
         .prepare(
             "SELECT a.id, a.path, a.kind, a.status, a.origin, a.created_at,
-                    snippet(asset_fts, -1, '[[[', ']]]', '…', 16)
-             FROM asset_fts
-             JOIN asset a ON a.id = asset_fts.asset_id
-             WHERE asset_fts MATCH ?1 AND a.project_id = ?2
-             ORDER BY bm25(asset_fts)
-             LIMIT ?3",
+                    snippet(f, -1, '[[[', ']]]', '…', 16),
+                    CASE WHEN instr(f.content, ?1) > 0
+                         AND instr(f.content, '〔澄思第 ') > 0 THEN
+                        (length(substr(f.content, 1, instr(f.content, ?1))) -
+                         length(replace(substr(f.content, 1, instr(f.content, ?1)),
+                                        '〔澄思第 ', ''))) / length('〔澄思第 ')
+                    END AS page
+             FROM asset_fts f
+             JOIN asset a ON a.id = f.asset_id
+             WHERE f MATCH ?2 AND a.project_id = ?3
+             ORDER BY bm25(f)
+             LIMIT ?4",
         )
         .map_err(|error| format!("全文检索失败：{error}"))?;
 
     let rows = statement
         .query_map(
-            params![fts_query, project_id, MAX_SEARCH_RESULTS as i64],
+            params![needle, fts_query, project_id, MAX_SEARCH_RESULTS as i64],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -389,6 +399,7 @@ fn fts_search(
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             },
         )
@@ -396,7 +407,7 @@ fn fts_search(
 
     let mut items = Vec::new();
     for row in rows {
-        let (id, relative_path, kind, status, origin, created_at, snippet) =
+        let (id, relative_path, kind, status, origin, created_at, snippet, page) =
             row.map_err(|error| format!("读取检索结果失败：{error}"))?;
         items.push(build_item(
             root,
@@ -408,6 +419,7 @@ fn fts_search(
                 origin,
                 created_at,
                 snippet: Some(snippet).filter(|value| !value.trim().is_empty()),
+                page: page.and_then(|value| u32::try_from(value).ok()),
             },
         ));
     }
@@ -423,7 +435,13 @@ fn like_search(
     let pattern = format!("%{needle}%");
     let mut statement = connection
         .prepare(
-            "SELECT a.id, a.path, a.kind, a.status, a.origin, a.created_at
+            "SELECT a.id, a.path, a.kind, a.status, a.origin, a.created_at,
+                    CASE WHEN instr(f.content, ?4) > 0
+                         AND instr(f.content, '〔澄思第 ') > 0 THEN
+                        (length(substr(f.content, 1, instr(f.content, ?4))) -
+                         length(replace(substr(f.content, 1, instr(f.content, ?4)),
+                                        '〔澄思第 ', ''))) / length('〔澄思第 ')
+                    END AS page
              FROM asset a
              LEFT JOIN asset_fts f ON f.asset_id = a.id
              WHERE a.project_id = ?1
@@ -436,7 +454,7 @@ fn like_search(
 
     let rows = statement
         .query_map(
-            params![project_id, pattern, MAX_SEARCH_RESULTS as i64],
+            params![project_id, pattern, MAX_SEARCH_RESULTS as i64, needle],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -445,6 +463,7 @@ fn like_search(
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
                 ))
             },
         )
@@ -452,7 +471,7 @@ fn like_search(
 
     let mut items = Vec::new();
     for row in rows {
-        let (id, relative_path, kind, status, origin, created_at) =
+        let (id, relative_path, kind, status, origin, created_at, page) =
             row.map_err(|error| format!("读取检索结果失败：{error}"))?;
         items.push(build_item(
             root,
@@ -464,6 +483,7 @@ fn like_search(
                 origin,
                 created_at,
                 snippet: None,
+                page: page.and_then(|value| u32::try_from(value).ok()),
             },
         ));
     }
@@ -498,14 +518,20 @@ fn build_item(root: &Path, row: AssetRow) -> AssetItem {
         origin: row.origin,
         created_at: row.created_at,
         snippet: row.snippet,
+        page: row.page,
     }
 }
 
 fn extract_text(path: &Path) -> Option<String> {
-    if !is_text_like(path) {
-        return None;
+    match extension(path).as_str() {
+        "pdf" => extract_pdf_text(path),
+        "docx" => extract_docx_text(path),
+        _ if is_text_like(path) => extract_plain_text(path),
+        _ => None,
     }
+}
 
+fn extract_plain_text(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut buffer = Vec::new();
     file.take(MAX_TEXT_BYTES).read_to_end(&mut buffer).ok()?;
@@ -515,6 +541,135 @@ fn extract_text(path: &Path) -> Option<String> {
     } else {
         Some(text)
     }
+}
+
+fn extract_pdf_text(path: &Path) -> Option<String> {
+    let pages = match std::panic::catch_unwind(|| pdf_extract::extract_text_by_pages(path)) {
+        Ok(Ok(pages)) => pages,
+        _ => return None,
+    };
+    let mut output = String::new();
+    let mut saw_text = false;
+    for (index, page) in pages.iter().enumerate() {
+        output.push_str(&format!("\n\n{PAGE_MARKER_PREFIX}{} 页〕\n\n", index + 1));
+        let page = collapse_whitespace(page);
+        if !page.is_empty() {
+            output.push_str(&page);
+            saw_text = true;
+        }
+        if output.chars().count() >= MAX_TEXT_BYTES as usize {
+            break;
+        }
+    }
+    saw_text.then_some(output)
+}
+
+fn extract_docx_text(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut document = archive.by_name("word/document.xml").ok()?;
+    let mut xml = String::new();
+    document.read_to_string(&mut xml).ok()?;
+    let text = docx_xml_to_text(&xml);
+    let text = collapse_blank_lines(&text);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn docx_xml_to_text(xml: &str) -> String {
+    let mut paragraphs = Vec::new();
+    for chunk in xml.split("</w:p>") {
+        let mut line = String::new();
+        let mut rest = chunk;
+        while let Some(start) = rest.find("<w:t") {
+            let after = &rest[start..];
+            let Some(open_end) = after.find('>') else {
+                break;
+            };
+            let tail = &after[open_end + 1..];
+            let Some(close) = tail.find("</w:t>") else {
+                break;
+            };
+            line.push_str(&decode_xml_entities(&tail[..close]));
+            rest = &tail[close + 6..];
+        }
+        paragraphs.push(line.trim().to_string());
+    }
+    paragraphs.join("\n")
+}
+
+fn decode_xml_entities(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        output.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(end) = tail.find(';') else {
+            output.push_str(tail);
+            return output;
+        };
+        let entity = &tail[1..end];
+        let decoded = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ => entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+                .and_then(|code| u32::from_str_radix(code, 16).ok())
+                .or_else(|| {
+                    entity
+                        .strip_prefix('#')
+                        .and_then(|code| code.parse::<u32>().ok())
+                })
+                .and_then(char::from_u32),
+        };
+        if let Some(character) = decoded {
+            output.push(character);
+        } else {
+            output.push_str(&tail[..=end]);
+        }
+        rest = &tail[end + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut blank_lines = 0usize;
+    for line in value.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank_lines += 1;
+            continue;
+        }
+        if !output.is_empty() {
+            output.push_str(if blank_lines > 0 { "\n\n" } else { "\n" });
+        }
+        output.push_str(&line);
+        blank_lines = 0;
+    }
+    output
+}
+
+fn collapse_blank_lines(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut blank = false;
+    for line in value.lines() {
+        if line.trim().is_empty() {
+            blank = true;
+            continue;
+        }
+        if !output.is_empty() && blank {
+            output.push('\n');
+        }
+        output.push_str(line.trim_end());
+        output.push('\n');
+        blank = false;
+    }
+    output
 }
 
 fn is_text_like(path: &Path) -> bool {
@@ -695,5 +850,66 @@ mod tests {
 
         let missing = list_assets(&workspace, Some("paper"), None).expect("搜索缺失资产");
         assert_eq!(missing[0].status, "missing");
+    }
+
+    #[test]
+    fn parses_pdf_pages_and_docx_text() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().expect("创建临时目录");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sample-two-pages.pdf");
+        fs::copy(&fixture, directory.path().join("paper-two-pages.pdf")).expect("复制 PDF 样例");
+
+        let docx_path = directory.path().join("notes.docx");
+        let file = fs::File::create(&docx_path).expect("创建 DOCX");
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("写入 DOCX 条目");
+        writer
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:t>Urban green space</w:t></w:r><w:r><w:t xml:space="preserve"> &amp; heat</w:t></w:r></w:p>
+<w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+</w:body></w:document>"#,
+            )
+            .expect("写入 DOCX 正文");
+        writer.finish().expect("完成 DOCX");
+
+        let workspace = open_workspace(directory.path()).expect("打开项目");
+        scan_workspace(&workspace).expect("扫描项目");
+
+        let first = list_assets(&workspace, Some("Alpha findings"), None).expect("检索第 1 页");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].name, "paper-two-pages.pdf");
+        assert_eq!(first[0].page, Some(1));
+
+        let second = list_assets(&workspace, Some("Beta findings"), None).expect("检索第 2 页");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].page, Some(2));
+
+        let docx = list_assets(&workspace, Some("heat"), None).expect("检索 DOCX");
+        assert_eq!(docx.len(), 1);
+        assert_eq!(docx[0].name, "notes.docx");
+        assert_eq!(docx[0].page, None);
+
+        let docx_text = get_asset_text(&workspace, &docx[0].id, None)
+            .expect("读取 DOCX 正文")
+            .expect("DOCX 正文存在");
+        assert!(docx_text.contains("Urban green space & heat"));
+        assert!(docx_text.contains("Second paragraph"));
+
+        let pdf_text = get_asset_text(&workspace, &first[0].id, Some(20_000))
+            .expect("读取 PDF 正文")
+            .expect("PDF 正文存在");
+        assert!(pdf_text.contains("〔澄思第 1 页〕"));
+        assert!(pdf_text.contains("〔澄思第 2 页〕"));
     }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { Modal } from "../../components/Modal";
 import {
@@ -106,7 +106,7 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
     let cancelled = false;
     setPreview(null);
     setPreviewLoading(true);
-    getAssetText(selected.id)
+    getAssetText(selected.id, selected.kind === "literature" ? 60_000 : undefined)
       .then((text) => {
         if (!cancelled) {
           setPreview(text);
@@ -276,12 +276,15 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
                 <span className="asset-path">{asset.relativePath}</span>
                 {asset.snippet && (
                   <span className="asset-snippet">
-                    <HighlightedSnippet text={asset.snippet} />
+                    <HighlightedSnippet text={stripPageMarkers(asset.snippet)} />
                   </span>
                 )}
               </span>
               <span className="asset-tags">
                 <span className="tag">{KIND_LABELS[asset.kind] ?? asset.kind}</span>
+                {asset.page != null && (
+                  <span className="tag tag--muted">第 {asset.page} 页</span>
+                )}
                 <span
                   className={`tag ${
                     asset.status === "missing" ? "tag--warning" : "tag--success"
@@ -331,10 +334,10 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
           {previewLoading ? (
             <p className="muted">正在读取正文…</p>
           ) : preview ? (
-            <pre className="asset-preview">{preview}</pre>
+            <AssetPreview text={preview} />
           ) : (
             <p className="hint">
-              该文件暂无正文索引，或类型暂不支持文本预览。PDF/DOCX 解析器将在后续接入。
+              该文件暂无正文索引。扫描版 PDF 需要先 OCR，暂不能建立可检索文本；其他不支持的类型只做文件级管理。
             </p>
           )}
 
@@ -347,6 +350,34 @@ export function AssetsPage({ workspace }: AssetsPageProps) {
       )}
     </section>
   );
+}
+
+function AssetPreview({ text }: { text: string }) {
+  const parts = text.split(/〔澄思第 (\d+) 页〕/g);
+  const blocks: ReactNode[] = [];
+  const head = parts[0]?.trim();
+  if (head) {
+    blocks.push(
+      <pre className="asset-preview" key="head">
+        {head}
+      </pre>,
+    );
+  }
+  for (let index = 1; index < parts.length; index += 2) {
+    const page = parts[index];
+    const body = parts[index + 1]?.trim() ?? "";
+    blocks.push(
+      <div className="asset-page" key={`page-${index}`}>
+        <span className="asset-page-marker">第 {page} 页</span>
+        <pre className="asset-preview">{body || "（本页没有可提取的文本）"}</pre>
+      </div>,
+    );
+  }
+  return <>{blocks.length > 0 ? blocks : <pre className="asset-preview">{text}</pre>}</>;
+}
+
+function stripPageMarkers(text: string): string {
+  return text.replace(/〔澄思第 \d+ 页〕/g, "").trim();
 }
 
 function HighlightedSnippet({ text }: { text: string }) {

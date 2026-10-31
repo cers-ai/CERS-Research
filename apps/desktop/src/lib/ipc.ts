@@ -93,6 +93,7 @@ export interface AssetItem {
   origin: string;
   createdAt: string;
   snippet: string | null;
+  page: number | null;
 }
 
 export interface ScanSummary {

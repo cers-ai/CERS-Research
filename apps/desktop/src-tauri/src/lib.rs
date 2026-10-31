@@ -82,6 +82,7 @@ pub fn run() {
             commands::list_experiment_runs,
             commands::propose_decomposition,
             commands::confirm_proposal,
+            commands::suggest_report_outline,
             commands::suggest_report_changes,
             commands::apply_report_changes,
             commands::get_report,

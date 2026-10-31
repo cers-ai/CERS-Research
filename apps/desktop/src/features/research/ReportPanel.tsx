@@ -10,7 +10,9 @@ import {
   listSavedSources,
   saveReport,
   suggestReportChanges,
+  suggestReportOutline,
   type ReportChangeProposal,
+  type ReportOutline,
   type ReportDocument,
   type ReportRevision,
   type SavedSource,
@@ -41,6 +43,10 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [sources, setSources] = useState<SavedSource[]>([]);
   const [citeLoading, setCiteLoading] = useState(false);
   const [citeError, setCiteError] = useState<string | null>(null);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outline, setOutline] = useState<ReportOutline | null>(null);
+  const [outlineError, setOutlineError] = useState<string | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const loadRevisions = useCallback(async () => {
@@ -190,6 +196,39 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
     setCiteOpen(false);
   };
 
+  const openOutline = async () => {
+    setOutlineOpen(true);
+    setOutline(null);
+    setOutlineError(null);
+    setOutlineLoading(true);
+    try {
+      setOutline(await suggestReportOutline(nodeId));
+    } catch (cause) {
+      setOutlineError(toMessage(cause));
+    } finally {
+      setOutlineLoading(false);
+    }
+  };
+
+  const applyOutline = () => {
+    if (!outline) {
+      return;
+    }
+    const markdown = `# ${outline.title}\n\n${outline.sections
+      .map(
+        (section, index) =>
+          `## ${index + 1}. ${section.heading}\n\n${section.points
+            .map((point) => `- ${point}`)
+            .join("\n")}`,
+      )
+      .join("\n\n")}\n`;
+    setContent(markdown);
+    setDirty(true);
+    setOutlineOpen(false);
+    setNotice("提纲已写入正文，可继续编辑或让 AI 修订");
+    window.requestAnimationFrame(() => editorRef.current?.focus());
+  };
+
   const openAi = () => {
     setInstruction("");
     setProposal(null);
@@ -285,6 +324,16 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
             ))}
           </select>
         )}
+        {content.trim().length === 0 && (
+          <button
+            type="button"
+            className="btn btn--compact"
+            disabled={!report || outlineLoading}
+            onClick={() => void openOutline()}
+          >
+            {outlineLoading ? "生成中…" : "生成提纲"}
+          </button>
+        )}
         <button
           type="button"
           className="btn btn--compact"
@@ -343,6 +392,54 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       <p className="hint">
         正文自动保存并保留版本。可导出 Markdown、DOCX 与 PDF，文件保存在 Research Outputs/reports。
       </p>
+
+      {outlineOpen && (
+        <Modal
+          title="报告提纲"
+          description="提纲根据研究目标、已收藏来源与已引用资料生成；确认后才会写入正文。"
+          onClose={() => setOutlineOpen(false)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setOutlineOpen(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={!outline}
+                onClick={applyOutline}
+              >
+                采用提纲
+              </button>
+            </>
+          }
+        >
+          {outlineError && <div className="canvas-error">{outlineError}</div>}
+          {outlineLoading ? (
+            <p className="muted">正在生成提纲…</p>
+          ) : outline ? (
+            <>
+              <h3 className="node-workspace-section">{outline.title}</h3>
+              {outline.sections.map((section, index) => (
+                <div className="outline-section" key={`${section.heading}-${index}`}>
+                  <strong>
+                    {index + 1}. {section.heading}
+                  </strong>
+                  {section.points.length > 0 && (
+                    <ul>
+                      {section.points.map((point) => (
+                        <li key={point}>{point}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </>
+          ) : (
+            <p className="hint">尚未获得提纲。可以关闭后重试。</p>
+          )}
+        </Modal>
+      )}
 
       {citeOpen && (
         <Modal

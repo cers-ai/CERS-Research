@@ -1876,6 +1876,21 @@ code,
   overflow: auto;
 }
 
+.outline-section {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.outline-section ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+}
+
 .citation-list {
   display: flex;
   flex-direction: column;

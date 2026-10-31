@@ -372,6 +372,16 @@ export interface ReportChangeProposal {
   changes: ReportChange[];
 }
 
+export interface ReportOutlineSection {
+  heading: string;
+  points: string[];
+}
+
+export interface ReportOutline {
+  title: string;
+  sections: ReportOutlineSection[];
+}
+
 export interface ReportChangesApplied {
   document: ReportDocument;
   proposal: ReportChangeProposal;
@@ -615,6 +625,10 @@ export async function listReportRevisions(
 
 export async function exportReportMarkdown(nodeId: string): Promise<string> {
   return invoke<string>("export_report_markdown", { nodeId });
+}
+
+export async function suggestReportOutline(nodeId: string): Promise<ReportOutline> {
+  return invoke<ReportOutline>("suggest_report_outline", { nodeId });
 }
 
 export async function suggestReportChanges(

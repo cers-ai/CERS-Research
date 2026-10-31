@@ -26,6 +26,13 @@ const REPORT_REVISION_SYSTEM_PROMPT: &str = "你是学术报告修订助手。�
     {\"summary\":\"一句话说明\",\"changes\":[{\"id\":\"c1\",\"oldText\":\"正文中逐字存在的原文片段\",\"newText\":\"替换文本\",\"reason\":\"理由\"}]}。\
     规则：oldText 必须逐字来自正文；每处尽量短；最多 5 项；不得编造引用、页码、数据或结论；保留用户已有的事实表述。";
 
+const REPORT_OUTLINE_SYSTEM_PROMPT: &str =
+    "你是学术报告提纲助手。根据研究目标、已有来源与本地资料，
+    生成一个可编辑的中文报告提纲。只输出一个 JSON 对象，不要 Markdown 代码块：
+    {\"title\":\"报告标题\",\"sections\":[{\"heading\":\"章节标题\",\"points\":[\"要点\"]}]}。
+    规则：2 到 8 个章节；每章最多 6 个要点；不编造引用、页码、数据或结论；
+    仅题录或仅摘要的来源只能提示需要核实，不能写成已验证事实。";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendNodeMessageInput {
@@ -46,6 +53,21 @@ pub struct ConversationReply {
 pub struct ReportChangesApplied {
     pub document: ReportDocument,
     pub proposal: ReportChangeProposalView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineSection {
+    pub heading: String,
+    #[serde(default)]
+    pub points: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportOutline {
+    pub title: String,
+    pub sections: Vec<OutlineSection>,
 }
 
 #[tauri::command]
@@ -593,6 +615,216 @@ pub fn confirm_proposal(
 ) -> Result<GraphSnapshot, String> {
     let workspace = current_workspace(&state)?;
     proposals::apply_proposal(&workspace, &proposal_id, nodes, edges)
+}
+
+#[tauri::command]
+pub async fn suggest_report_outline(
+    app: tauri::AppHandle,
+    node_id: String,
+) -> Result<ReportOutline, String> {
+    let workspace = workspace_for_app(&app)?;
+    let context = chat::node_context(&workspace, &node_id)?;
+    if context.node_type != "report" {
+        return Err("只有报告节点可以生成提纲。".to_string());
+    }
+
+    let definition = definition::get_definition(&workspace)?;
+    let sources = stored_sources::linked_sources_for_chat(&workspace, &node_id, 6)?;
+    let assets = asset_links::list_linked_assets(&workspace, &node_id)?;
+
+    let mut brief = format!(
+        "报告节点：{}
+节点目标：{}
+",
+        context.title,
+        if context.goal.trim().is_empty() {
+            "尚未填写"
+        } else {
+            context.goal.trim()
+        }
+    );
+    if let Some(question) = definition
+        .content
+        .question
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        brief.push_str(&format!(
+            "研究问题：{question}
+"
+        ));
+    }
+    if let Some(goal) = definition
+        .content
+        .goal
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        brief.push_str(&format!(
+            "研究目标：{goal}
+"
+        ));
+    }
+    if let Some(approach) = definition
+        .content
+        .approach
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        brief.push_str(&format!(
+            "研究路径：{approach}
+"
+        ));
+    }
+    if !sources.is_empty() {
+        brief.push_str(
+            "
+已收藏来源：
+",
+        );
+        for source in &sources {
+            let coverage = match source.coverage.as_str() {
+                "abstract_only" => "仅摘要",
+                "fulltext" => "已获全文",
+                "unavailable" => "不可获取",
+                _ => "仅题录",
+            };
+            brief.push_str(&format!(
+                "- {}（{}）· {}
+",
+                source.title,
+                source
+                    .year
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "年份未知".to_string()),
+                coverage
+            ));
+        }
+    }
+    if !assets.is_empty() {
+        brief.push_str(
+            "
+已引用本地资料：
+",
+        );
+        for asset in assets.iter().take(6) {
+            brief.push_str(&format!(
+                "- {}（{}，{}）
+",
+                asset.name,
+                asset.kind,
+                if asset.has_text {
+                    "有可读正文"
+                } else {
+                    "无正文索引"
+                }
+            ));
+        }
+    }
+
+    let settings = settings::load_settings_for_app(&app)?;
+    let resolved = settings::resolve_role(&settings, "report")?;
+    let system = REPORT_OUTLINE_SYSTEM_PROMPT;
+    let user = format!(
+        "请为以下研究形成报告提纲：
+{brief}"
+    );
+
+    let model_id = resolved.model.model_id.clone();
+    let payload = serde_json::json!({
+        "provider": {
+            "baseUrl": resolved.provider.base_url.clone(),
+            "protocol": resolved.provider.protocol.clone(),
+            "proxy": resolved.provider.proxy.clone(),
+            "timeoutSeconds": resolved.provider.timeout_seconds
+        },
+        "modelId": model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "apiKey": resolved.api_key.clone(),
+        "maxTokens": 1400,
+        "temperature": 0.2
+    });
+
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/chat", &payload)
+    })
+    .await
+    .map_err(|error| format!("提纲任务失败：{error}"))??;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
+    if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let message = parsed
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("模型未能生成提纲。");
+        return Err(message.to_string());
+    }
+    let content_text = parsed
+        .get("content")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let outline_json = extract_json_object(content_text)
+        .ok_or_else(|| "模型没有返回可解析的提纲。".to_string())?;
+
+    let title = outline_json
+        .get("title")
+        .and_then(|item| item.as_str())
+        .unwrap_or(&context.title)
+        .trim()
+        .to_string();
+    let mut sections: Vec<OutlineSection> = Vec::new();
+    if let Some(items) = outline_json
+        .get("sections")
+        .and_then(|item| item.as_array())
+    {
+        for item in items.iter().take(8) {
+            let heading = item
+                .get("heading")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if heading.is_empty() {
+                continue;
+            }
+            let points = item
+                .get("points")
+                .and_then(|value| value.as_array())
+                .map(|points| {
+                    points
+                        .iter()
+                        .filter_map(|point| point.as_str())
+                        .map(|point| point.trim().to_string())
+                        .filter(|point| !point.is_empty())
+                        .take(6)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            sections.push(OutlineSection { heading, points });
+        }
+    }
+    if sections.len() < 2 {
+        return Err("模型生成的提纲过短，请稍后重试。".to_string());
+    }
+
+    Ok(ReportOutline {
+        title: if title.is_empty() {
+            context.title
+        } else {
+            title
+        },
+        sections,
+    })
 }
 
 #[tauri::command]
@@ -1234,6 +1466,64 @@ mod tests {
                 .expect("oldText");
             assert!(report.contains(old_text), "oldText={old_text}");
         }
+        println!("content={content}");
+    }
+
+    /// 手动烟雾测试：需要本机已配置 report 角色模型。
+    /// 运行 `cargo test real_report_outline_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_report_outline_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: settings::GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+        let resolved = settings::resolve_role(&settings, "report").expect("resolve report model");
+
+        let brief = "报告节点：阶段报告
+节点目标：总结城市绿地与局地热环境的关联
+                     已收藏来源：
+- Urban green space and heat（2024）· 仅摘要
+";
+        let payload = serde_json::json!({
+            "provider": {
+                "baseUrl": resolved.provider.base_url,
+                "protocol": resolved.provider.protocol,
+                "proxy": resolved.provider.proxy,
+                "timeoutSeconds": resolved.provider.timeout_seconds
+            },
+            "modelId": resolved.model.model_id,
+            "messages": [
+                {"role": "system", "content": REPORT_OUTLINE_SYSTEM_PROMPT},
+                {"role": "user", "content": format!("请为以下研究形成报告提纲：
+        {brief}")}
+            ],
+            "apiKey": resolved.api_key,
+            "maxTokens": 1400,
+            "temperature": 0.2
+        });
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let reply = manager.post_json("/chat", &payload).expect("sidecar chat");
+        manager.shutdown();
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        let content = value
+            .get("content")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        let outline = extract_json_object(content).expect("JSON outline");
+        let sections = outline
+            .get("sections")
+            .and_then(|item| item.as_array())
+            .expect("sections");
+        assert!(sections.len() >= 2, "content={content}");
         println!("content={content}");
     }
 }

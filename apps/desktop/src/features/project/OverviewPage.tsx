@@ -1,4 +1,11 @@
-import type { RuntimeInfo, WorkspaceInfo } from "../../lib/ipc";
+import { useEffect, useState } from "react";
+
+import {
+  getResearchDefinition,
+  type ResearchDefinition,
+  type RuntimeInfo,
+  type WorkspaceInfo,
+} from "../../lib/ipc";
 
 interface OverviewPageProps {
   runtime: RuntimeInfo | null;
@@ -21,6 +28,27 @@ export function OverviewPage({
   onOpenTopic,
   onOpenAssets,
 }: OverviewPageProps) {
+  const [definition, setDefinition] = useState<ResearchDefinition | null>(null);
+
+  useEffect(() => {
+    if (!workspace) {
+      return;
+    }
+    let cancelled = false;
+    getResearchDefinition()
+      .then((value) => {
+        if (!cancelled) {
+          setDefinition(value);
+        }
+      })
+      .catch(() => {
+        // 概况页读取失败时保留空态，不阻塞其他项目信息。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace?.projectId]);
+
   if (!workspace) {
     return (
       <section className="page page--centered">
@@ -78,10 +106,32 @@ export function OverviewPage({
             这个项目已经建立本地工作区与总课题节点。研究定义尚未形成，需要你在选题对话中确认研究问题、目标与边界。
           </p>
           <div className="definition-placeholder">
-            <span className="tag tag--muted">尚未形成研究定义</span>
-            <p>
-              项目概况、选题工作台与总课题节点将读取同一份研究定义，不会出现三个不同版本。
-            </p>
+            {definition && (definition.content.goal || definition.content.question) ? (
+              <>
+                <span className="tag tag--success">
+                  研究定义 v{definition.revision}
+                </span>
+                {definition.content.question && (
+                  <p>
+                    <strong>研究问题：</strong>
+                    {definition.content.question}
+                  </p>
+                )}
+                {definition.content.goal && (
+                  <p>
+                    <strong>研究目标：</strong>
+                    {definition.content.goal}
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="tag tag--muted">尚未形成研究定义</span>
+                <p>
+                  项目概况、选题工作台与总课题节点读取同一份研究定义，不会出现三个不同版本。
+                </p>
+              </>
+            )}
           </div>
           <div className="row">
             <button type="button" className="btn" onClick={onOpenTopic}>

@@ -7,7 +7,9 @@ import {
 import { createPortal } from "react-dom";
 
 import { ChatPanel } from "../../components/ChatPanel";
+import { ExperimentPanel } from "../research/ExperimentPanel";
 import { LiteraturePanel } from "../research/LiteraturePanel";
+import { ReportPanel } from "../research/ReportPanel";
 import { SavedSourcesPanel } from "../research/SavedSourcesPanel";
 import type { GraphNodeDto } from "../../lib/ipc";
 import { NODE_STATE_LABEL, NODE_TYPE_ICON, NODE_TYPE_LABEL } from "./nodeMeta";
@@ -169,6 +171,20 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
             文献阅读、证据矩阵、数据分析、报告编辑与实验执行将在对应模块接入后出现在这里。
             当前工作区不展示任何模拟研究内容。
           </div>
+
+          {node.type === "experiment" && (
+            <>
+              <h3 className="node-workspace-section">实验运行</h3>
+              <ExperimentPanel nodeId={node.id} initialGoal={node.goal} />
+            </>
+          )}
+
+          {node.type === "report" && (
+            <>
+              <h3 className="node-workspace-section">报告正文</h3>
+              <ReportPanel nodeId={node.id} title={node.title} />
+            </>
+          )}
 
           {(node.type === "root" || node.type === "research") && (
             <>

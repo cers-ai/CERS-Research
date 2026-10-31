@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
 
 import { ChatPanel } from "../../components/ChatPanel";
+import { Modal } from "../../components/Modal";
 import {
   getGlobalSettings,
+  getResearchDefinition,
+  saveResearchDefinition,
+  type ResearchDefinition,
+  type ResearchDefinitionContent,
   type SettingsView,
   type WorkspaceInfo,
 } from "../../lib/ipc";
@@ -22,6 +27,18 @@ export function TopicPage({
   const [settingsView, setSettingsView] = useState<SettingsView | null>(null);
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [definition, setDefinition] = useState<ResearchDefinition | null>(null);
+  const [loadingDefinition, setLoadingDefinition] = useState(false);
+  const [definitionError, setDefinitionError] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [savingDefinition, setSavingDefinition] = useState(false);
+  const [form, setForm] = useState({
+    question: "",
+    goal: "",
+    scope: "",
+    approach: "",
+    expected: "",
+  });
 
   useEffect(() => {
     if (!workspace) {
@@ -52,6 +69,84 @@ export function TopicPage({
       cancelled = true;
     };
   }, [workspace?.projectId]);
+
+  useEffect(() => {
+    if (!workspace) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingDefinition(true);
+    getResearchDefinition()
+      .then((value) => {
+        if (!cancelled) {
+          setDefinition(value);
+          setDefinitionError(null);
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setDefinitionError(toMessage(cause));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingDefinition(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace?.projectId]);
+
+  const openDefinitionEditor = () => {
+    const content = definition?.content;
+    setForm({
+      question: content?.question ?? "",
+      goal: content?.goal ?? "",
+      scope: content?.scope ?? "",
+      approach: content?.approach ?? "",
+      expected: (content?.expectedOutputs ?? []).join("\n"),
+    });
+    setEditOpen(true);
+  };
+
+  const submitDefinition = async () => {
+    const expectedOutputs = form.expected
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const content: ResearchDefinitionContent = {
+      question: form.question.trim() || null,
+      goal: form.goal.trim() || null,
+      scope: form.scope.trim() || null,
+      approach: form.approach.trim() || null,
+      expectedOutputs,
+    };
+    const confirmedFields: string[] = [];
+    if (content.question) confirmedFields.push("question");
+    if (content.goal) confirmedFields.push("goal");
+    if (content.scope) confirmedFields.push("scope");
+    if (content.approach) confirmedFields.push("approach");
+    if (expectedOutputs.length) confirmedFields.push("expectedOutputs");
+
+    setSavingDefinition(true);
+    try {
+      const saved = await saveResearchDefinition(
+        content,
+        confirmedFields,
+        definition?.revision ?? 0,
+      );
+      setDefinition(saved);
+      setDefinitionError(null);
+      setEditOpen(false);
+    } catch (cause) {
+      setDefinitionError(toMessage(cause));
+    } finally {
+      setSavingDefinition(false);
+    }
+  };
 
   if (!workspace) {
     return (
@@ -148,31 +243,136 @@ export function TopicPage({
         <aside className="card card--pad definition-panel">
           <div className="section-head">
             <h2 className="section-title">研究定义</h2>
-            <span className="tag tag--muted">持续完善</span>
+            {definition && definition.revision > 0 && (
+              <span className="tag tag--muted">v{definition.revision}</span>
+            )}
+            <button type="button" className="btn btn--compact" onClick={openDefinitionEditor}>
+              编辑
+            </button>
           </div>
-          <dl className="definition-fields">
-            <div>
-              <dt>研究问题</dt>
-              <dd className="muted">待确认</dd>
-            </div>
-            <div>
-              <dt>研究目标</dt>
-              <dd className="muted">待确认</dd>
-            </div>
-            <div>
-              <dt>范围与边界</dt>
-              <dd className="muted">待确认</dd>
-            </div>
-            <div>
-              <dt>预期成果</dt>
-              <dd className="muted">待确认</dd>
-            </div>
-          </dl>
+
+          {loadingDefinition && <p className="muted">正在读取研究定义…</p>}
+          {definitionError && <div className="canvas-error">{definitionError}</div>}
+
+          {!loadingDefinition && (
+            <dl className="definition-fields">
+              <div>
+                <dt>研究问题</dt>
+                <dd className={definition?.content.question ? "" : "muted"}>
+                  {definition?.content.question || "待确认"}
+                </dd>
+              </div>
+              <div>
+                <dt>研究目标</dt>
+                <dd className={definition?.content.goal ? "" : "muted"}>
+                  {definition?.content.goal || "待确认"}
+                </dd>
+              </div>
+              <div>
+                <dt>范围与边界</dt>
+                <dd className={definition?.content.scope ? "" : "muted"}>
+                  {definition?.content.scope || "待确认"}
+                </dd>
+              </div>
+              <div>
+                <dt>方法方向</dt>
+                <dd className={definition?.content.approach ? "" : "muted"}>
+                  {definition?.content.approach || "待确认"}
+                </dd>
+              </div>
+              <div>
+                <dt>预期成果</dt>
+                <dd
+                  className={
+                    definition?.content.expectedOutputs.length ? "" : "muted"
+                  }
+                >
+                  {definition?.content.expectedOutputs.length
+                    ? definition.content.expectedOutputs.join("、")
+                    : "待确认"}
+                </dd>
+              </div>
+            </dl>
+          )}
           <p className="hint">
-            研究定义默认按需展开，不要求一次填写完整。后续确认的内容会同步到项目概况与总课题节点。
+            研究定义默认按需展开，不要求一次填写完整。保存后会同步到项目概况与总课题节点。
           </p>
         </aside>
       </div>
+
+      {editOpen && (
+        <Modal
+          title="编辑研究定义"
+          description="这些内容会作为项目与总课题节点共享的唯一研究定义。"
+          onClose={() => setEditOpen(false)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setEditOpen(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={savingDefinition}
+                onClick={() => void submitDefinition()}
+              >
+                {savingDefinition ? "保存中…" : "保存定义"}
+              </button>
+            </>
+          }
+        >
+          <label className="form-field">
+            <span>研究问题</span>
+            <textarea
+              value={form.question}
+              placeholder="你希望回答的核心问题是什么？"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, question: event.target.value }))
+              }
+            />
+          </label>
+          <label className="form-field">
+            <span>研究目标</span>
+            <textarea
+              value={form.goal}
+              placeholder="希望达成什么可检验的目标？"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, goal: event.target.value }))
+              }
+            />
+          </label>
+          <label className="form-field">
+            <span>范围与边界</span>
+            <textarea
+              value={form.scope}
+              placeholder="研究对象、时间、空间或数据范围，以及明确不做什么。"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, scope: event.target.value }))
+              }
+            />
+          </label>
+          <label className="form-field">
+            <span>方法方向</span>
+            <textarea
+              value={form.approach}
+              placeholder="拟采用的文献、数据、实验或比较方法。"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, approach: event.target.value }))
+              }
+            />
+          </label>
+          <label className="form-field">
+            <span>预期成果（每行一项）</span>
+            <textarea
+              value={form.expected}
+              placeholder={"阶段性研究报告\n可复核的数据分析结果"}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, expected: event.target.value }))
+              }
+            />
+          </label>
+        </Modal>
+      )}
     </section>
   );
 }

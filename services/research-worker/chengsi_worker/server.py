@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from . import __version__
+from .experiments import run_experiment
 from .sources import search_sources
 
 CONTRACT_VERSION = 1
@@ -54,14 +55,16 @@ class _Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
-        if self.path in ("/chat", "/sources/search"):
+        if self.path in ("/chat", "/sources/search", "/experiments/run"):
             payload = self._read_json_body()
             if payload is None:
                 return
             if self.path == "/chat":
                 self._send_json(200, _chat(payload))
-            else:
+            elif self.path == "/sources/search":
                 self._send_json(200, search_sources(payload))
+            else:
+                self._send_json(200, run_experiment(payload))
             return
 
         self._send_json(404, {"ok": False, "error": "not_found"})

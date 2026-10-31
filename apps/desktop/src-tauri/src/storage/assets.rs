@@ -313,6 +313,22 @@ pub fn get_asset_text(
     Ok(extract_text(&path).map(|text| truncate_chars(&text, max_chars)))
 }
 
+pub fn asset_for_run(
+    workspace: &WorkspaceInfo,
+    asset_id: &str,
+) -> Result<(String, String, String), String> {
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    connection
+        .query_row(
+            "SELECT path, kind, status FROM asset WHERE project_id = ?1 AND id = ?2",
+            params![workspace.project_id, asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取数据资产失败：{error}"))?
+        .ok_or_else(|| "数据资产不存在或不属于当前项目。".to_string())
+}
+
 fn search_assets(
     workspace: &WorkspaceInfo,
     needle: &str,

@@ -7,7 +7,13 @@ use crate::domain::{RuntimeInfo, SidecarStatus, WorkspaceInfo};
 use crate::settings;
 use crate::storage::assets::{self, AssetItem, ScanSummary};
 use crate::storage::chat::{self, ChatMessage, NodeChatContext};
+use crate::storage::definition::{
+    self as definition, ResearchDefinition, ResearchDefinitionContent,
+};
+use crate::storage::experiments::{self as experiments, ExperimentRun, NewExperimentRun};
 use crate::storage::graph::{self, CreateNodeInput, GraphSnapshot, UpdateNodeInput};
+use crate::storage::proposals::{self as proposals, ProposalEdge, ProposalNode, ProposalView};
+use crate::storage::reports::{self as reports, ReportDocument, ReportRevision};
 use crate::storage::sources::{self as stored_sources, SaveSourceInput, SavedSource};
 use crate::storage::{self, now_iso};
 use crate::AppState;
@@ -166,6 +172,396 @@ pub fn get_asset_text(
 ) -> Result<Option<String>, String> {
     let workspace = current_workspace(&state)?;
     assets::get_asset_text(&workspace, &asset_id, limit)
+}
+
+#[tauri::command]
+pub fn get_research_definition(state: State<'_, AppState>) -> Result<ResearchDefinition, String> {
+    let workspace = current_workspace(&state)?;
+    definition::get_definition(&workspace)
+}
+
+#[tauri::command]
+pub fn save_research_definition(
+    content: ResearchDefinitionContent,
+    confirmed_fields: Vec<String>,
+    base_revision: i64,
+    state: State<'_, AppState>,
+) -> Result<ResearchDefinition, String> {
+    let workspace = current_workspace(&state)?;
+    definition::save_definition(&workspace, content, confirmed_fields, base_revision)
+}
+
+#[tauri::command]
+pub async fn run_experiment(
+    app: tauri::AppHandle,
+    node_id: String,
+    asset_id: String,
+    goal: String,
+) -> Result<ExperimentRun, String> {
+    let workspace = workspace_for_app(&app)?;
+    experiments::ensure_experiment_node(&workspace, &node_id)?;
+
+    let (relative, _kind, status) = assets::asset_for_run(&workspace, &asset_id)?;
+    if status == "missing" {
+        return Err("数据资产的原文件已不可用，请重新扫描项目。".to_string());
+    }
+    let extension = Path::new(&relative)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if !matches!(extension.as_str(), "csv" | "tsv") {
+        return Err("首版实验只支持 CSV / TSV 数据分析。".to_string());
+    }
+
+    let root = dunce::canonicalize(&workspace.workspace_path)
+        .map_err(|error| format!("无法访问 Workspace：{error}"))?;
+    let candidate = dunce::canonicalize(root.join(&relative))
+        .map_err(|error| format!("无法访问数据文件：{error}"))?;
+    if !candidate.starts_with(&root) {
+        return Err("数据文件越出了当前 Workspace。".to_string());
+    }
+
+    let goal = if goal.trim().is_empty() {
+        "分析数据的主要特征".to_string()
+    } else {
+        goal.trim().to_string()
+    };
+    let payload = serde_json::json!({
+        "path": candidate.display().to_string(),
+        "goal": goal,
+    });
+
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/experiments/run", &payload)
+    })
+    .await
+    .map_err(|error| format!("实验任务失败：{error}"))?;
+
+    let (outputs, run_state, error) = match reply {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(value) => {
+                let ok = value
+                    .get("ok")
+                    .and_then(|item| item.as_bool())
+                    .unwrap_or(false);
+                let message = value
+                    .get("message")
+                    .and_then(|item| item.as_str())
+                    .map(str::to_string);
+                (
+                    value,
+                    if ok { "completed" } else { "failed" },
+                    if ok {
+                        None
+                    } else {
+                        message.or_else(|| Some("实验分析失败。".to_string()))
+                    },
+                )
+            }
+            Err(parse_error) => (
+                serde_json::Value::Null,
+                "failed",
+                Some(format!("实验结果无法解析：{parse_error}")),
+            ),
+        },
+        Err(sidecar_error) => (serde_json::Value::Null, "failed", Some(sidecar_error)),
+    };
+
+    let parameters = serde_json::json!({
+        "method": "builtin_csv_summary",
+        "assetId": asset_id,
+    });
+    experiments::save_run(
+        &workspace,
+        NewExperimentRun {
+            node_id: &node_id,
+            asset_id: Some(&asset_id),
+            input_path: Some(&relative),
+            goal: &goal,
+            parameters: &parameters,
+            state: run_state,
+            outputs: &outputs,
+            error: error.as_deref(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn list_experiment_runs(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ExperimentRun>, String> {
+    let workspace = current_workspace(&state)?;
+    experiments::ensure_experiment_node(&workspace, &node_id)?;
+    experiments::list_runs(&workspace, &node_id)
+}
+
+#[tauri::command]
+pub async fn propose_decomposition(
+    app: tauri::AppHandle,
+    node_id: String,
+) -> Result<ProposalView, String> {
+    let workspace = workspace_for_app(&app)?;
+    let context = chat::node_context(&workspace, &node_id)?;
+    let graph = graph::load_graph(&workspace)?;
+    if !matches!(context.node_type.as_str(), "root" | "research") {
+        return Err("智能分解只能在总课题或研究节点上使用。".to_string());
+    }
+
+    let settings = settings::load_settings_for_app(&app)?;
+    let resolved = settings::resolve_role(&settings, "planning")?;
+    let existing: Vec<serde_json::Value> = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            serde_json::json!({
+                "id": node.id,
+                "type": node.node_type,
+                "title": node.title,
+                "goal": node.goal
+            })
+        })
+        .collect();
+
+    let system = "你是科研图规划助手。基于当前节点目标和已有节点，提出 2-5 个尚未覆盖的独立研究工作。\
+        只输出一个 JSON 对象，不要 Markdown 代码块，不要解释。格式：\
+        {\"rationale\":\"一句话理由\",\"nodes\":[{\"clientId\":\"n1\",\"type\":\"research|experiment|report\",\"title\":\"名称\",\"goal\":\"目标\"}],\
+        \"edges\":[{\"sourceId\":\"当前节点ID或clientId\",\"targetId\":\"clientId\",\"kind\":\"decomposition|association\"}]}。\
+        规则：不要重复已有节点；新增节点必须有明确研究目标；分解关系从当前节点指向新研究；实验节点只用于需要独立验证的目标。";
+    let user = format!(
+        "当前节点：{type_label}「{title}」\n节点目标：{goal}\n当前节点 ID：{node_id}\n已有节点：{existing}",
+        type_label = match context.node_type.as_str() {
+            "root" => "总课题",
+            "research" => "研究",
+            other => other,
+        },
+        title = context.title,
+        goal = if context.goal.trim().is_empty() {
+            "尚未填写"
+        } else {
+            context.goal.as_str()
+        },
+        existing = serde_json::to_string(&existing)
+            .map_err(|error| format!("序列化已有节点失败：{error}"))?
+    );
+
+    let model_id = resolved.model.model_id.clone();
+    let payload = serde_json::json!({
+        "provider": {
+            "baseUrl": resolved.provider.base_url.clone(),
+            "protocol": resolved.provider.protocol.clone(),
+            "proxy": resolved.provider.proxy.clone(),
+            "timeoutSeconds": resolved.provider.timeout_seconds
+        },
+        "modelId": model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "apiKey": resolved.api_key.clone(),
+        "maxTokens": 1200,
+        "temperature": 0.3
+    });
+
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/chat", &payload)
+    })
+    .await
+    .map_err(|error| format!("智能分解任务失败：{error}"))??;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
+    if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let message = parsed
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("模型未能生成智能分解提案。");
+        return Err(message.to_string());
+    }
+    let content = parsed
+        .get("content")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let proposal_json = extract_json_object(content)
+        .ok_or_else(|| "模型没有返回可解析的提案 JSON。".to_string())?;
+
+    let mut nodes: Vec<ProposalNode> = Vec::new();
+    let mut client_ids = std::collections::HashSet::new();
+    if let Some(items) = proposal_json.get("nodes").and_then(|item| item.as_array()) {
+        for (index, item) in items.iter().enumerate().take(6) {
+            let node_type = item
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("research");
+            if !matches!(node_type, "research" | "experiment" | "report") {
+                continue;
+            }
+            let title = item
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() {
+                continue;
+            }
+            let mut client_id = item
+                .get("clientId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if client_id.is_empty() {
+                client_id = format!("n{}", index + 1);
+            }
+            while !client_ids.insert(client_id.clone()) {
+                client_id = format!("{client_id}_{}", index + 1);
+            }
+            let goal = item
+                .get("goal")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            nodes.push(ProposalNode {
+                client_id,
+                node_type: node_type.to_string(),
+                title: title.to_string(),
+                goal,
+            });
+        }
+    }
+    if nodes.is_empty() {
+        return Err("模型没有给出可用的候选节点，请重试。".to_string());
+    }
+
+    let mut edges: Vec<ProposalEdge> = Vec::new();
+    if let Some(items) = proposal_json.get("edges").and_then(|item| item.as_array()) {
+        for item in items {
+            let kind = item
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or("decomposition");
+            if !matches!(kind, "decomposition" | "association") {
+                continue;
+            }
+            let source = item
+                .get("sourceId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let target = item
+                .get("targetId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if source.is_empty() || target.is_empty() {
+                continue;
+            }
+            let source = if source == "anchor" || source == "root" {
+                node_id.clone()
+            } else {
+                source
+            };
+            if !nodes.iter().any(|node| node.client_id == target)
+                && !graph.nodes.iter().any(|node| node.id == target)
+            {
+                continue;
+            }
+            edges.push(ProposalEdge {
+                source_id: source,
+                target_id: target,
+                kind: kind.to_string(),
+            });
+        }
+    }
+    if edges.is_empty() {
+        for node in &nodes {
+            edges.push(ProposalEdge {
+                source_id: node_id.clone(),
+                target_id: node.client_id.clone(),
+                kind: "decomposition".to_string(),
+            });
+        }
+    }
+
+    let rationale = proposal_json
+        .get("rationale")
+        .and_then(|value| value.as_str())
+        .unwrap_or("基于当前节点目标和已有科研图结构生成候选研究工作。")
+        .to_string();
+
+    proposals::insert_proposal(
+        &workspace,
+        &node_id,
+        graph.graph_revision,
+        &rationale,
+        nodes,
+        edges,
+    )
+}
+
+#[tauri::command]
+pub fn confirm_proposal(
+    proposal_id: String,
+    nodes: Vec<ProposalNode>,
+    edges: Vec<ProposalEdge>,
+    state: State<'_, AppState>,
+) -> Result<GraphSnapshot, String> {
+    let workspace = current_workspace(&state)?;
+    proposals::apply_proposal(&workspace, &proposal_id, nodes, edges)
+}
+
+#[tauri::command]
+pub fn get_report(node_id: String, state: State<'_, AppState>) -> Result<ReportDocument, String> {
+    let workspace = current_workspace(&state)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    reports::get_report(&workspace, &node_id)
+}
+
+#[tauri::command]
+pub fn save_report(
+    node_id: String,
+    content_md: String,
+    base_revision: i64,
+    state: State<'_, AppState>,
+) -> Result<ReportDocument, String> {
+    let workspace = current_workspace(&state)?;
+    reports::save_report(&workspace, &node_id, &content_md, base_revision)
+}
+
+#[tauri::command]
+pub fn list_report_revisions(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ReportRevision>, String> {
+    let workspace = current_workspace(&state)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    reports::list_revisions(&workspace, &node_id)
+}
+
+#[tauri::command]
+pub fn export_report_markdown(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let workspace = current_workspace(&state)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    reports::export_markdown(&workspace, &node_id)
 }
 
 #[tauri::command]
@@ -415,6 +811,15 @@ fn system_prompt(context: &NodeChatContext, sources: &[SavedSource]) -> String {
     }
 
     prompt
+}
+
+fn extract_json_object(content: &str) -> Option<serde_json::Value> {
+    let start = content.find('{')?;
+    let end = content.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&content[start..=end]).ok()
 }
 
 fn workspace_for_app(app: &tauri::AppHandle) -> Result<WorkspaceInfo, String> {

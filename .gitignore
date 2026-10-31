@@ -49,3 +49,6 @@ Thumbs.db
 # --- local scratch ---
 .tmp/
 0.需求/
+# --- internal requirements / design documents (not published) ---
+0.需求/
+docs/

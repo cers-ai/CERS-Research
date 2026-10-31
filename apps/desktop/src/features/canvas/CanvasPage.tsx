@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -24,18 +24,23 @@ import "@xyflow/react/dist/style.css";
 
 import { Modal } from "../../components/Modal";
 import {
+  confirmProposal,
   createEdge,
   createNode,
   deleteEdge,
   deleteNode,
   getGraph,
   moveNode,
+  proposeDecomposition,
   saveViewport,
   updateNode,
   type EdgeKind,
   type GraphNodeDto,
   type GraphSnapshot,
   type NodeType,
+  type ProposalEdge,
+  type ProposalNode,
+  type ProposalView,
   type WorkspaceInfo,
 } from "../../lib/ipc";
 import { NodeWorkspace } from "./NodeWorkspace";
@@ -46,6 +51,7 @@ type CanvasNodeData = Record<string, unknown> & {
   goal: string;
   nodeType: NodeType;
   state: string;
+  preview?: boolean;
   onOpen: () => void;
   onAdd: () => void;
   onEdit: () => void;
@@ -57,6 +63,11 @@ type CanvasNode = Node<CanvasNodeData, "cers">;
 type UndoAction =
   | { kind: "node"; id: string }
   | { kind: "edge"; id: string };
+
+type ProposalDraft = ProposalNode & {
+  include: boolean;
+  relation: EdgeKind | "none";
+};
 
 interface CanvasPageProps {
   workspace: WorkspaceInfo | null;
@@ -88,6 +99,11 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
   const [deletingEdgeId, setDeletingEdgeId] = useState<string | null>(null);
   const [undoAction, setUndoAction] = useState<UndoAction | null>(null);
   const [savedViewport, setSavedViewport] = useState<Viewport | null>(null);
+  const [proposal, setProposal] = useState<ProposalView | null>(null);
+  const [proposalDraft, setProposalDraft] = useState<ProposalDraft[]>([]);
+  const [proposing, setProposing] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [confirmingProposal, setConfirmingProposal] = useState(false);
 
   const buildNodes = useCallback((graph: GraphSnapshot): CanvasNode[] => {
     return graph.nodes.map((node) => ({
@@ -339,6 +355,152 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
     }
   }, [undoAction, workspaceNode, applySnapshot]);
 
+  const startDecomposition = useCallback(async () => {
+    const anchor =
+      selectedId ?? snapshot?.nodes.find((node) => node.type === "root")?.id;
+    if (!anchor) {
+      setError("请先选择一个总课题或研究节点。");
+      return;
+    }
+
+    setProposing(true);
+    setProposalError(null);
+    try {
+      const view = await proposeDecomposition(anchor);
+      setProposal(view);
+      setProposalDraft(
+        view.nodes.map((node) => ({
+          ...node,
+          include: true,
+          relation: defaultRelation(view, node.clientId),
+        })),
+      );
+    } catch (cause) {
+      setError(toMessage(cause));
+    } finally {
+      setProposing(false);
+    }
+  }, [selectedId, snapshot]);
+
+  const updateDraft = (index: number, patch: Partial<ProposalDraft>) => {
+    setProposalDraft((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  };
+
+  const addCandidate = () => {
+    setProposalDraft((current) => [
+      ...current,
+      {
+        clientId: `custom_${Date.now()}`,
+        nodeType: "research",
+        title: "",
+        goal: "",
+        include: true,
+        relation: "decomposition",
+      },
+    ]);
+  };
+
+  const cancelProposal = () => {
+    setProposal(null);
+    setProposalDraft([]);
+    setProposalError(null);
+  };
+
+  const submitProposal = async () => {
+    if (!proposal) {
+      return;
+    }
+    const included = proposalDraft.filter(
+      (item) => item.include && item.title.trim(),
+    );
+    if (included.length === 0) {
+      setProposalError("至少保留一个候选节点。");
+      return;
+    }
+
+    setConfirmingProposal(true);
+    try {
+      const nodes: ProposalNode[] = included.map((item) => ({
+        clientId: item.clientId,
+        nodeType: item.nodeType,
+        title: item.title.trim(),
+        goal: item.goal.trim(),
+      }));
+      const edges: ProposalEdge[] = included
+        .filter((item) => item.relation !== "none")
+        .map((item) => ({
+          sourceId: proposal.anchorNodeId,
+          targetId: item.clientId,
+          kind: item.relation as EdgeKind,
+        }));
+      const graph = await confirmProposal(proposal.id, nodes, edges);
+      applySnapshot(graph);
+      setProposal(null);
+      setProposalDraft([]);
+      setProposalError(null);
+      setUndoAction(null);
+      setError(null);
+    } catch (cause) {
+      setProposalError(toMessage(cause));
+    } finally {
+      setConfirmingProposal(false);
+    }
+  };
+
+  const previewNodes = useMemo<CanvasNode[]>(() => {
+    if (!proposal) {
+      return [];
+    }
+    const anchor = snapshot?.nodes.find(
+      (node) => node.id === proposal.anchorNodeId,
+    );
+    return proposalDraft
+      .filter((item) => item.include)
+      .map((item, index) => ({
+        id: `preview_${item.clientId}`,
+        type: "cers",
+        position: {
+          x: (anchor?.x ?? 120) + 340,
+          y: (anchor?.y ?? 180) + index * 170,
+        },
+        draggable: false,
+        selectable: false,
+        data: {
+          title: item.title || "待确认节点",
+          goal: item.goal,
+          nodeType: item.nodeType,
+          state: "preview",
+          preview: true,
+          onOpen: () => undefined,
+          onAdd: () => undefined,
+          onEdit: () => undefined,
+          onDelete: () => undefined,
+        },
+      }));
+  }, [proposal, proposalDraft, snapshot]);
+
+  const previewEdges = useMemo<Edge[]>(() => {
+    if (!proposal) {
+      return [];
+    }
+    return proposalDraft
+      .filter((item) => item.include && item.relation !== "none")
+      .map((item) => ({
+        id: `preview_edge_${item.clientId}`,
+        source: proposal.anchorNodeId,
+        target: `preview_${item.clientId}`,
+        type: "smoothstep",
+        style: { stroke: "#7f91ad", strokeWidth: 1.6, strokeDasharray: "6 5" },
+      }));
+  }, [proposal, proposalDraft]);
+
+  const displayNodes = [...nodes, ...previewNodes];
+  const displayEdges = [...edges, ...previewEdges];
+
   if (!workspace) {
     return (
       <section className="page page--centered">
@@ -383,6 +545,14 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
           <button
             type="button"
             className="btn btn--compact"
+            disabled={proposing}
+            onClick={() => void startDecomposition()}
+          >
+            {proposing ? "生成提案…" : "智能分解"}
+          </button>
+          <button
+            type="button"
+            className="btn btn--compact"
             onClick={() => resetAddForm(selectedId)}
           >
             ＋ 添加节点
@@ -407,8 +577,8 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
         <div className="flow-wrap">
           <ReactFlowProvider>
             <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={displayNodes}
+            edges={displayEdges}
             nodeTypes={nodeTypes}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
@@ -700,6 +870,116 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
           <p className="muted">删除关系不会影响两个节点本身及其研究内容。</p>
         </Modal>
       )}
+
+      {proposal && (
+        <Modal
+          title="智能分解 · 提案审阅"
+          description="这是可编辑的研究结构建议。确认前不会创建正式节点，虚线边框卡片只是预览。"
+          onClose={cancelProposal}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={cancelProposal}>
+                放弃提案
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={confirmingProposal}
+                onClick={() => void submitProposal()}
+              >
+                {confirmingProposal ? "创建中…" : "确认创建"}
+              </button>
+            </>
+          }
+        >
+          {proposal.rationale && (
+            <p className="muted proposal-rationale">{proposal.rationale}</p>
+          )}
+          {proposalError && <div className="canvas-error">{proposalError}</div>}
+
+          <div className="proposal-list">
+            {proposalDraft.map((item, index) => (
+              <div className="proposal-row" key={item.clientId}>
+                <input
+                  type="checkbox"
+                  checked={item.include}
+                  aria-label={`包含 ${item.title || "候选节点"}`}
+                  onChange={(event) =>
+                    updateDraft(index, { include: event.target.checked })
+                  }
+                />
+                <div className="proposal-fields">
+                  <div className="form-grid">
+                    <label className="form-field">
+                      <span>节点名称</span>
+                      <input
+                        value={item.title}
+                        onChange={(event) =>
+                          updateDraft(index, { title: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>节点类型</span>
+                      <select
+                        value={item.nodeType}
+                        onChange={(event) =>
+                          updateDraft(index, {
+                            nodeType: event.target.value as ProposalNode["nodeType"],
+                          })
+                        }
+                      >
+                        <option value="research">研究节点</option>
+                        <option value="experiment">实验节点</option>
+                        <option value="report">报告节点</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="form-field">
+                    <span>研究目标</span>
+                    <input
+                      value={item.goal}
+                      onChange={(event) =>
+                        updateDraft(index, { goal: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>与当前节点的关系</span>
+                    <select
+                      value={item.relation}
+                      onChange={(event) =>
+                        updateDraft(index, {
+                          relation: event.target.value as EdgeKind | "none",
+                        })
+                      }
+                    >
+                      <option value="decomposition">分解关系（实线箭头）</option>
+                      <option value="association">研究关联（虚线）</option>
+                      <option value="none">暂不关联</option>
+                    </select>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--danger-ghost btn--compact"
+                  onClick={() =>
+                    setProposalDraft((current) =>
+                      current.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                >
+                  移除
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <button type="button" className="btn btn--compact" onClick={addCandidate}>
+            ＋ 添加候选节点
+          </button>
+        </Modal>
+      )}
     </section>
   );
 }
@@ -729,7 +1009,9 @@ function CersNode({ data, selected }: NodeProps<CanvasNode>) {
 
   return (
     <div
-      className={`flow-node flow-node--${node.nodeType} ${selected ? "is-selected" : ""}`}
+      className={`flow-node flow-node--${node.nodeType} ${
+        selected ? "is-selected" : ""
+      } ${node.preview ? "is-preview" : ""}`}
     >
       {selected && (
         <div className="flow-node-tools nodrag" onPointerDown={(event) => event.stopPropagation()}>
@@ -775,21 +1057,35 @@ function CersNode({ data, selected }: NodeProps<CanvasNode>) {
         </div>
       )}
 
-      <Handle type="target" position={Position.Left} className="flow-handle" />
+      {!node.preview && (
+        <Handle type="target" position={Position.Left} className="flow-handle" />
+      )}
 
       <div className="flow-node-type">
         <span className="flow-node-bar" />
         <span className="flow-node-icon">{NODE_TYPE_ICON[node.nodeType]}</span>
-        <span>{NODE_TYPE_LABEL[node.nodeType]}</span>
+        <span>
+          {node.preview
+            ? `待确认 · ${NODE_TYPE_LABEL[node.nodeType]}`
+            : NODE_TYPE_LABEL[node.nodeType]}
+        </span>
       </div>
       <h3 className="flow-node-title">{node.title}</h3>
       <p className="flow-node-goal">{node.goal || "尚未填写研究目标"}</p>
       <div className="flow-node-footer">
-        <span>{NODE_STATE_LABEL[node.state] ?? node.state}</span>
-        <span>{node.nodeType === "root" ? "唯一根节点" : "双击打开"}</span>
+        <span>{node.preview ? "待确认" : NODE_STATE_LABEL[node.state] ?? node.state}</span>
+        <span>
+          {node.preview
+            ? "未写入科研图"
+            : node.nodeType === "root"
+              ? "唯一根节点"
+              : "双击打开"}
+        </span>
       </div>
 
-      <Handle type="source" position={Position.Right} className="flow-handle" />
+      {!node.preview && (
+        <Handle type="source" position={Position.Right} className="flow-handle" />
+      )}
     </div>
   );
 }
@@ -809,6 +1105,14 @@ function toFlowEdges(graph: GraphSnapshot): Edge[] {
         ? { stroke: "#7f91ad", strokeWidth: 1.8 }
         : { stroke: "#a3afbf", strokeWidth: 1.6, strokeDasharray: "6 5" },
   }));
+}
+
+function defaultRelation(
+  view: ProposalView,
+  clientId: string,
+): EdgeKind | "none" {
+  const edge = view.edges.find((item) => item.targetId === clientId);
+  return edge ? edge.kind : "decomposition";
 }
 
 function toMessage(cause: unknown): string {

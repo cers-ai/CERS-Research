@@ -246,6 +246,110 @@ export interface SavedSource {
   createdAt: string;
 }
 
+export interface ResearchDefinitionContent {
+  question: string | null;
+  goal: string | null;
+  scope: string | null;
+  approach: string | null;
+  expectedOutputs: string[];
+}
+
+export interface ExperimentColumnStats {
+  name: string;
+  type: "number" | "text";
+  missing: number;
+  count: number;
+  mean?: number | null;
+  std?: number | null;
+  min?: number | null;
+  max?: number | null;
+  median?: number | null;
+  topValues?: Array<{ value: string; count: number }>;
+}
+
+export interface ExperimentCorrelation {
+  x: string;
+  y: string;
+  r: number;
+  n: number;
+}
+
+export interface ExperimentOutput {
+  ok: boolean;
+  goal?: string;
+  message?: string;
+  summary?: {
+    rows: number;
+    columns: number;
+    numericColumns: number;
+    missingCells: number;
+    truncated: boolean;
+  };
+  columns?: ExperimentColumnStats[];
+  correlations?: ExperimentCorrelation[];
+  preview?: {
+    headers: string[];
+    rows: string[][];
+  };
+}
+
+export interface ExperimentRun {
+  id: string;
+  nodeId: string;
+  assetId: string | null;
+  goal: string;
+  state: "completed" | "failed";
+  outputs: ExperimentOutput;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface ResearchDefinition {
+  content: ResearchDefinitionContent;
+  confirmedFields: string[];
+  revision: number;
+  updatedAt: string | null;
+}
+
+export interface ProposalNode {
+  clientId: string;
+  nodeType: "research" | "experiment" | "report";
+  title: string;
+  goal: string;
+}
+
+export interface ProposalEdge {
+  sourceId: string;
+  targetId: string;
+  kind: "decomposition" | "association";
+}
+
+export interface ProposalView {
+  id: string;
+  anchorNodeId: string;
+  baseGraphRevision: number;
+  status: string;
+  rationale: string;
+  nodes: ProposalNode[];
+  edges: ProposalEdge[];
+}
+
+export interface ReportDocument {
+  id: string;
+  nodeId: string;
+  contentMd: string;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface ReportRevision {
+  id: string;
+  revision: number;
+  contentMd: string;
+  createdAt: string;
+}
+
 export interface SaveSourceInput {
   provider: string;
   providerName: string;
@@ -396,6 +500,80 @@ export async function searchAcademicSources(
     query,
     yearFrom: yearFrom ?? null,
     yearTo: yearTo ?? null,
+  });
+}
+
+export async function proposeDecomposition(
+  nodeId: string,
+): Promise<ProposalView> {
+  return invoke<ProposalView>("propose_decomposition", { nodeId });
+}
+
+export async function confirmProposal(
+  proposalId: string,
+  nodes: ProposalNode[],
+  edges: ProposalEdge[],
+): Promise<GraphSnapshot> {
+  return invoke<GraphSnapshot>("confirm_proposal", {
+    proposalId,
+    nodes,
+    edges,
+  });
+}
+
+export async function getReport(nodeId: string): Promise<ReportDocument> {
+  return invoke<ReportDocument>("get_report", { nodeId });
+}
+
+export async function saveReport(
+  nodeId: string,
+  contentMd: string,
+  baseRevision: number,
+): Promise<ReportDocument> {
+  return invoke<ReportDocument>("save_report", {
+    nodeId,
+    contentMd,
+    baseRevision,
+  });
+}
+
+export async function listReportRevisions(
+  nodeId: string,
+): Promise<ReportRevision[]> {
+  return invoke<ReportRevision[]>("list_report_revisions", { nodeId });
+}
+
+export async function exportReportMarkdown(nodeId: string): Promise<string> {
+  return invoke<string>("export_report_markdown", { nodeId });
+}
+
+export async function runExperiment(
+  nodeId: string,
+  assetId: string,
+  goal: string,
+): Promise<ExperimentRun> {
+  return invoke<ExperimentRun>("run_experiment", { nodeId, assetId, goal });
+}
+
+export async function listExperimentRuns(
+  nodeId: string,
+): Promise<ExperimentRun[]> {
+  return invoke<ExperimentRun[]>("list_experiment_runs", { nodeId });
+}
+
+export async function getResearchDefinition(): Promise<ResearchDefinition> {
+  return invoke<ResearchDefinition>("get_research_definition");
+}
+
+export async function saveResearchDefinition(
+  content: ResearchDefinitionContent,
+  confirmedFields: string[],
+  baseRevision: number,
+): Promise<ResearchDefinition> {
+  return invoke<ResearchDefinition>("save_research_definition", {
+    content,
+    confirmedFields,
+    baseRevision,
   });
 }
 

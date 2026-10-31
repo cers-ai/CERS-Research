@@ -10,7 +10,11 @@ use crate::domain::WorkspaceInfo;
 
 pub mod assets;
 pub mod chat;
+pub mod definition;
+pub mod experiments;
 pub mod graph;
+pub mod proposals;
+pub mod reports;
 pub mod sources;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -283,6 +287,15 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
         CREATE INDEX IF NOT EXISTS ix_conversation_node
             ON conversation(node_id, created_at);
 
+        CREATE TABLE IF NOT EXISTS research_definition (
+            project_id      TEXT PRIMARY KEY,
+            content_json    TEXT NOT NULL,
+            confirmed_fields TEXT NOT NULL DEFAULT '[]',
+            revision        INTEGER NOT NULL DEFAULT 1,
+            updated_at      TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS source_record (
             id             TEXT PRIMARY KEY,
             project_id     TEXT NOT NULL,
@@ -314,6 +327,47 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             FOREIGN KEY (source_id) REFERENCES source_record(id) ON DELETE CASCADE,
             FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS report_document (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL,
+            node_id     TEXT NOT NULL UNIQUE,
+            content_md  TEXT NOT NULL DEFAULT '',
+            revision    INTEGER NOT NULL DEFAULT 0,
+            updated_at  TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS report_revision (
+            id          TEXT PRIMARY KEY,
+            report_id   TEXT NOT NULL,
+            revision    INTEGER NOT NULL,
+            content_md  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            UNIQUE (report_id, revision),
+            FOREIGN KEY (report_id) REFERENCES report_document(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_run (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL,
+            node_id         TEXT NOT NULL,
+            asset_id        TEXT,
+            input_path      TEXT,
+            goal            TEXT NOT NULL,
+            parameters_json TEXT NOT NULL DEFAULT '{}',
+            state           TEXT NOT NULL CHECK (state IN ('completed','failed')),
+            outputs_json    TEXT NOT NULL,
+            error           TEXT,
+            created_at      TEXT NOT NULL,
+            finished_at     TEXT,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_experiment_run_node
+            ON experiment_run(node_id, created_at);
 
         CREATE TABLE IF NOT EXISTS job_event (
             job_id       TEXT NOT NULL,

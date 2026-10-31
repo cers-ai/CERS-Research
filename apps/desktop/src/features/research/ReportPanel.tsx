@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { Modal } from "../../components/Modal";
 import {
+  applyReportChanges,
   exportReportDocument,
   exportReportMarkdown,
   getReport,
   listReportRevisions,
   saveReport,
+  suggestReportChanges,
+  type ReportChangeProposal,
   type ReportDocument,
   type ReportRevision,
 } from "../../lib/ipc";
@@ -24,6 +28,13 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [proposal, setProposal] = useState<ReportChangeProposal | null>(null);
+  const [accepted, setAccepted] = useState<Set<string>>(new Set());
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const loadRevisions = useCallback(async () => {
     try {
@@ -121,6 +132,76 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
     }
   };
 
+  const openAi = () => {
+    setInstruction("");
+    setProposal(null);
+    setAccepted(new Set());
+    setAiError(null);
+    setAiOpen(true);
+  };
+
+  const generateChanges = async () => {
+    if (!instruction.trim() || !report) {
+      return;
+    }
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      if (dirty) {
+        const saved = await saveReport(nodeId, content, report.revision);
+        setReport(saved);
+        setContent(saved.contentMd);
+        setDirty(false);
+        void loadRevisions();
+      }
+      const next = await suggestReportChanges(nodeId, instruction);
+      setProposal(next);
+      setAccepted(new Set());
+    } catch (cause) {
+      setAiError(toMessage(cause));
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const toggleChange = (id: string) => {
+    setAccepted((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const applySelected = async () => {
+    if (!proposal || accepted.size === 0) {
+      return;
+    }
+    setApplying(true);
+    setAiError(null);
+    try {
+      const result = await applyReportChanges(
+        nodeId,
+        proposal.id,
+        Array.from(accepted),
+      );
+      setReport(result.document);
+      setContent(result.document.contentMd);
+      setDirty(false);
+      setProposal(null);
+      setAiOpen(false);
+      setNotice(`已应用 ${accepted.size} 项修改，报告更新为 v${result.document.revision}`);
+      void loadRevisions();
+    } catch (cause) {
+      setAiError(toMessage(cause));
+    } finally {
+      setApplying(false);
+    }
+  };
+
   return (
     <div className="report-panel">
       <div className="report-toolbar">
@@ -146,6 +227,14 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
             ))}
           </select>
         )}
+        <button
+          type="button"
+          className="btn btn--compact"
+          disabled={!report || saving}
+          onClick={openAi}
+        >
+          AI 修订
+        </button>
         <button
           type="button"
           className="btn btn--compact"
@@ -188,6 +277,90 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       <p className="hint">
         正文自动保存并保留版本。可导出 Markdown、DOCX 与 PDF，文件保存在 Research Outputs/reports。
       </p>
+
+      {aiOpen && (
+        <Modal
+          title="AI 修订报告"
+          description={
+            proposal
+              ? "AI 只提供局部替换建议；勾选后才会写入正文，未选中的内容保持原样。"
+              : "说明希望如何修订。AI 会返回逐项局部修改，而不是重写整篇。"
+          }
+          onClose={() => setAiOpen(false)}
+          footer={
+            proposal ? (
+              <>
+                <button type="button" className="btn" onClick={() => setAiOpen(false)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  disabled={applying || accepted.size === 0}
+                  onClick={() => void applySelected()}
+                >
+                  {applying ? "应用中…" : `应用选中修改（${accepted.size}）`}
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn" onClick={() => setAiOpen(false)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  disabled={aiLoading || !instruction.trim()}
+                  onClick={() => void generateChanges()}
+                >
+                  {aiLoading ? "生成中…" : "生成修改建议"}
+                </button>
+              </>
+            )
+          }
+        >
+          {aiError && <div className="canvas-error">{aiError}</div>}
+
+          {!proposal ? (
+            <label className="form-field">
+              <span>修订要求</span>
+              <textarea
+                value={instruction}
+                placeholder="例如：把结论写得更谨慎，明确区分摘要级证据与已核实全文。"
+                onChange={(event) => setInstruction(event.target.value)}
+              />
+              <span className="hint">
+                建议先保存当前版本。生成提案后，如果正文又被修改，应用时会提示版本冲突。
+              </span>
+            </label>
+          ) : (
+            <>
+              <p className="muted">{proposal.summary}</p>
+              <div className="report-change-list">
+                {proposal.changes.map((change) => (
+                  <div className="report-change-row" key={change.id}>
+                    <input
+                      type="checkbox"
+                      checked={accepted.has(change.id)}
+                      aria-label={`接受修改 ${change.id}`}
+                      onChange={() => toggleChange(change.id)}
+                    />
+                    <div className="report-change-body">
+                      <p className="report-change-label">原段落</p>
+                      <p className="oldtext">{change.oldText}</p>
+                      <p className="report-change-label">建议修改</p>
+                      <p className="newtext">{change.newText}</p>
+                      {change.reason && (
+                        <p className="muted">理由：{change.reason}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

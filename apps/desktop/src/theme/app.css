@@ -1863,6 +1863,62 @@ code,
   line-height: 1.8;
 }
 
+.report-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 48vh;
+  overflow: auto;
+}
+
+.report-change-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.report-change-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 8px;
+  accent-color: var(--color-primary);
+}
+
+.report-change-body {
+  min-width: 0;
+}
+
+.report-change-label {
+  margin: 4px 0 2px;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+}
+
+.oldtext {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--color-danger-soft);
+  color: #8b4850;
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  text-decoration: line-through;
+}
+
+.newtext {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--color-success-soft);
+  color: #175e49;
+  font-size: var(--text-xs);
+  line-height: 1.65;
+}
+
 .node-chat {
   display: flex;
   flex-direction: column;

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use rusqlite::{params, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{new_id, now_iso, open_project_db};
 use crate::domain::WorkspaceInfo;
@@ -268,6 +268,210 @@ fn safe_filename(value: &str) -> String {
     output.chars().take(60).collect()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportChange {
+    pub id: String,
+    pub old_text: String,
+    pub new_text: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub review: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportChangeProposalView {
+    pub id: String,
+    pub node_id: String,
+    pub base_revision: i64,
+    pub status: String,
+    pub summary: String,
+    pub changes: Vec<ReportChange>,
+}
+
+pub fn insert_report_changes(
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    base_revision: i64,
+    summary: &str,
+    mut changes: Vec<ReportChange>,
+) -> Result<ReportChangeProposalView, String> {
+    ensure_report_node(workspace, node_id)?;
+    let report = get_report(workspace, node_id)?;
+    if report.id.is_empty() {
+        return Err("请先保存报告正文，再生成修改建议。".to_string());
+    }
+    for change in &mut changes {
+        if change.review.is_empty() {
+            change.review = "pending".to_string();
+        }
+    }
+
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    let id = new_id("chg");
+    let now = now_iso();
+    let payload = serde_json::json!({
+        "summary": summary,
+        "changes": changes,
+    });
+    connection
+        .execute(
+            "INSERT INTO report_change_proposal
+                (id, project_id, report_id, node_id, base_revision, status,
+                 payload_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?7)",
+            params![
+                id,
+                workspace.project_id,
+                report.id,
+                node_id,
+                base_revision,
+                serde_json::to_string(&payload)
+                    .map_err(|error| format!("序列化修改提案失败：{error}"))?,
+                now
+            ],
+        )
+        .map_err(|error| format!("保存修改提案失败：{error}"))?;
+
+    Ok(ReportChangeProposalView {
+        id,
+        node_id: node_id.to_string(),
+        base_revision,
+        status: "pending".to_string(),
+        summary: summary.to_string(),
+        changes,
+    })
+}
+
+pub fn apply_report_changes(
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    proposal_id: &str,
+    accepted_ids: &[String],
+) -> Result<(ReportDocument, ReportChangeProposalView), String> {
+    ensure_report_node(workspace, node_id)?;
+    let proposal = load_change_proposal(workspace, proposal_id)?;
+    if proposal.node_id != node_id {
+        return Err("修改提案不属于当前报告节点。".to_string());
+    }
+    if proposal.status != "pending" {
+        return Err("该修改提案已处理。".to_string());
+    }
+
+    let report = get_report(workspace, node_id)?;
+    if report.revision != proposal.base_revision {
+        mark_proposal(workspace, proposal_id, "conflict")?;
+        return Err("报告正文已变化，请重新生成修改建议。".to_string());
+    }
+
+    let accepted: std::collections::HashSet<&str> =
+        accepted_ids.iter().map(String::as_str).collect();
+    if accepted.is_empty() {
+        return Err("至少选择一项修改。".to_string());
+    }
+
+    let mut content = report.content_md.clone();
+    let mut changes = proposal.changes.clone();
+    let mut applied = 0usize;
+
+    for change in &mut changes {
+        if !accepted.contains(change.id.as_str()) {
+            change.review = "rejected".to_string();
+            continue;
+        }
+        if !content.contains(&change.old_text) {
+            mark_proposal(workspace, proposal_id, "conflict")?;
+            return Err("待修改段落已变化，请重新核对。".to_string());
+        }
+        content = content.replacen(&change.old_text, &change.new_text, 1);
+        change.review = "accepted".to_string();
+        applied += 1;
+    }
+
+    let saved = save_report(workspace, node_id, &content, report.revision)?;
+    let status = if applied == changes.len() {
+        "applied"
+    } else {
+        "partially_applied"
+    };
+    mark_proposal(workspace, proposal_id, status)?;
+
+    Ok((
+        saved,
+        ReportChangeProposalView {
+            id: proposal.id,
+            node_id: proposal.node_id,
+            base_revision: proposal.base_revision,
+            status: status.to_string(),
+            summary: proposal.summary,
+            changes,
+        },
+    ))
+}
+
+fn load_change_proposal(
+    workspace: &WorkspaceInfo,
+    proposal_id: &str,
+) -> Result<ReportChangeProposalView, String> {
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    let row: Option<(String, String, i64, String, String)> = connection
+        .query_row(
+            "SELECT node_id, status, base_revision, payload_json, id
+             FROM report_change_proposal WHERE project_id = ?1 AND id = ?2",
+            params![workspace.project_id, proposal_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取修改提案失败：{error}"))?;
+
+    let Some((node_id, status, base_revision, payload_json, id)) = row else {
+        return Err("修改提案不存在。".to_string());
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
+    let summary = payload
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let changes: Vec<ReportChange> = payload
+        .get("changes")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+
+    Ok(ReportChangeProposalView {
+        id,
+        node_id,
+        base_revision,
+        status,
+        summary,
+        changes,
+    })
+}
+
+fn mark_proposal(workspace: &WorkspaceInfo, proposal_id: &str, status: &str) -> Result<(), String> {
+    let connection = open_project_db(workspace).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE report_change_proposal SET status = ?1, updated_at = ?2
+             WHERE project_id = ?3 AND id = ?4",
+            params![status, now_iso(), workspace.project_id, proposal_id],
+        )
+        .map_err(|error| format!("更新修改提案状态失败：{error}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +516,76 @@ mod tests {
         let path = export_markdown(&workspace, &node_id).expect("导出 Markdown");
         let exported = fs::read_to_string(path).expect("读取导出文件");
         assert_eq!(exported, "# 第二版");
+    }
+
+    #[test]
+    fn applies_only_accepted_report_changes() {
+        let directory = tempfile::tempdir().expect("创建临时目录");
+        let workspace = open_workspace(directory.path()).expect("打开项目");
+        let snapshot = create_node(
+            &workspace,
+            CreateNodeInput {
+                node_type: "report".to_string(),
+                title: "修订报告".to_string(),
+                goal: None,
+                x: 0.0,
+                y: 0.0,
+                parent_id: None,
+                edge_kind: None,
+            },
+        )
+        .expect("创建报告节点");
+        let node_id = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.title == "修订报告")
+            .map(|node| node.id.clone())
+            .expect("找到报告节点");
+
+        let saved = save_report(
+            &workspace,
+            &node_id,
+            "# 结论\n样本量偏小。\n方法部分需要补充。",
+            0,
+        )
+        .expect("保存报告");
+
+        let proposal = insert_report_changes(
+            &workspace,
+            &node_id,
+            saved.revision,
+            "收紧表述",
+            vec![
+                ReportChange {
+                    id: "c1".to_string(),
+                    old_text: "样本量偏小。".to_string(),
+                    new_text: "样本量偏小，结论需谨慎解读。".to_string(),
+                    reason: "补充限定".to_string(),
+                    review: "pending".to_string(),
+                },
+                ReportChange {
+                    id: "c2".to_string(),
+                    old_text: "方法部分需要补充。".to_string(),
+                    new_text: "方法部分需补充样本筛选流程。".to_string(),
+                    reason: "细化".to_string(),
+                    review: "pending".to_string(),
+                },
+            ],
+        )
+        .expect("保存提案");
+
+        let (document, applied) =
+            apply_report_changes(&workspace, &node_id, &proposal.id, &["c1".to_string()])
+                .expect("应用选中修改");
+
+        assert_eq!(document.revision, 2);
+        assert!(document.content_md.contains("结论需谨慎解读"));
+        assert!(document.content_md.contains("方法部分需要补充。"));
+        assert_eq!(applied.status, "partially_applied");
+        assert_eq!(applied.changes[0].review, "accepted");
+        assert_eq!(applied.changes[1].review, "rejected");
+        assert!(
+            apply_report_changes(&workspace, &node_id, &proposal.id, &["c2".to_string()]).is_err()
+        );
     }
 }

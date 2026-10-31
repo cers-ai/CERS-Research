@@ -343,6 +343,28 @@ export interface ReportDocument {
   updatedAt: string;
 }
 
+export interface ReportChange {
+  id: string;
+  oldText: string;
+  newText: string;
+  reason: string;
+  review: string;
+}
+
+export interface ReportChangeProposal {
+  id: string;
+  nodeId: string;
+  baseRevision: number;
+  status: string;
+  summary: string;
+  changes: ReportChange[];
+}
+
+export interface ReportChangesApplied {
+  document: ReportDocument;
+  proposal: ReportChangeProposal;
+}
+
 export interface ReportRevision {
   id: string;
   revision: number;
@@ -545,6 +567,28 @@ export async function listReportRevisions(
 
 export async function exportReportMarkdown(nodeId: string): Promise<string> {
   return invoke<string>("export_report_markdown", { nodeId });
+}
+
+export async function suggestReportChanges(
+  nodeId: string,
+  instruction: string,
+): Promise<ReportChangeProposal> {
+  return invoke<ReportChangeProposal>("suggest_report_changes", {
+    nodeId,
+    instruction,
+  });
+}
+
+export async function applyReportChanges(
+  nodeId: string,
+  proposalId: string,
+  acceptedIds: string[],
+): Promise<ReportChangesApplied> {
+  return invoke<ReportChangesApplied>("apply_report_changes", {
+    nodeId,
+    proposalId,
+    acceptedIds,
+  });
 }
 
 export async function exportReportDocument(

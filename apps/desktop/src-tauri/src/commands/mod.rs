@@ -13,10 +13,17 @@ use crate::storage::definition::{
 use crate::storage::experiments::{self as experiments, ExperimentRun, NewExperimentRun};
 use crate::storage::graph::{self, CreateNodeInput, GraphSnapshot, UpdateNodeInput};
 use crate::storage::proposals::{self as proposals, ProposalEdge, ProposalNode, ProposalView};
-use crate::storage::reports::{self as reports, ReportDocument, ReportRevision};
+use crate::storage::reports::{
+    self as reports, ReportChange, ReportChangeProposalView, ReportDocument, ReportRevision,
+};
 use crate::storage::sources::{self as stored_sources, SaveSourceInput, SavedSource};
 use crate::storage::{self, now_iso};
 use crate::AppState;
+
+const REPORT_REVISION_SYSTEM_PROMPT: &str = "你是学术报告修订助手。只提出局部修改，不要重写整篇。\
+    只输出一个 JSON 对象，不要 Markdown 代码块：\
+    {\"summary\":\"一句话说明\",\"changes\":[{\"id\":\"c1\",\"oldText\":\"正文中逐字存在的原文片段\",\"newText\":\"替换文本\",\"reason\":\"理由\"}]}。\
+    规则：oldText 必须逐字来自正文；每处尽量短；最多 5 项；不得编造引用、页码、数据或结论；保留用户已有的事实表述。";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +38,13 @@ pub struct ConversationReply {
     pub messages: Vec<ChatMessage>,
     pub model: String,
     pub usage: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportChangesApplied {
+    pub document: ReportDocument,
+    pub proposal: ReportChangeProposalView,
 }
 
 #[tauri::command]
@@ -527,6 +541,146 @@ pub fn confirm_proposal(
 }
 
 #[tauri::command]
+pub async fn suggest_report_changes(
+    app: tauri::AppHandle,
+    node_id: String,
+    instruction: String,
+) -> Result<ReportChangeProposalView, String> {
+    let workspace = workspace_for_app(&app)?;
+    reports::ensure_report_node(&workspace, &node_id)?;
+    let report = reports::get_report(&workspace, &node_id)?;
+    if report.content_md.trim().is_empty() {
+        return Err("请先写入并保存报告正文。".to_string());
+    }
+    let instruction = instruction.trim();
+    if instruction.is_empty() {
+        return Err("请说明希望如何修订报告。".to_string());
+    }
+
+    let settings = settings::load_settings_for_app(&app)?;
+    let resolved = settings::resolve_role(&settings, "report")?;
+    let content: String = report.content_md.chars().take(16_000).collect();
+    let system = REPORT_REVISION_SYSTEM_PROMPT;
+    let user = format!("修订要求：{instruction}\n\n报告正文：\n{content}");
+
+    let model_id = resolved.model.model_id.clone();
+    let payload = serde_json::json!({
+        "provider": {
+            "baseUrl": resolved.provider.base_url.clone(),
+            "protocol": resolved.provider.protocol.clone(),
+            "proxy": resolved.provider.proxy.clone(),
+            "timeoutSeconds": resolved.provider.timeout_seconds
+        },
+        "modelId": model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "apiKey": resolved.api_key.clone(),
+        "maxTokens": 2000,
+        "temperature": 0.2
+    });
+
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/chat", &payload)
+    })
+    .await
+    .map_err(|error| format!("报告修订任务失败：{error}"))??;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
+    if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let message = parsed
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("模型未能生成修改建议。");
+        return Err(message.to_string());
+    }
+    let content_text = parsed
+        .get("content")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let proposal_json = extract_json_object(content_text)
+        .ok_or_else(|| "模型没有返回可解析的修改提案。".to_string())?;
+
+    let summary = proposal_json
+        .get("summary")
+        .and_then(|item| item.as_str())
+        .unwrap_or("根据当前正文提出局部修改。")
+        .to_string();
+
+    let mut changes: Vec<ReportChange> = Vec::new();
+    if let Some(items) = proposal_json
+        .get("changes")
+        .and_then(|item| item.as_array())
+    {
+        for (index, item) in items.iter().enumerate() {
+            if changes.len() >= 5 {
+                break;
+            }
+            let old_text = item
+                .get("oldText")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let new_text = item
+                .get("newText")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            if old_text.trim().is_empty()
+                || new_text.trim().is_empty()
+                || old_text == new_text
+                || !report.content_md.contains(&old_text)
+            {
+                continue;
+            }
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("c{}", index + 1));
+            changes.push(ReportChange {
+                id,
+                old_text,
+                new_text,
+                reason: item
+                    .get("reason")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                review: "pending".to_string(),
+            });
+        }
+    }
+
+    if changes.is_empty() {
+        return Err("模型没有给出可应用的局部修改，请调整修订要求后重试。".to_string());
+    }
+
+    reports::insert_report_changes(&workspace, &node_id, report.revision, &summary, changes)
+}
+
+#[tauri::command]
+pub fn apply_report_changes(
+    node_id: String,
+    proposal_id: String,
+    accepted_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ReportChangesApplied, String> {
+    let workspace = current_workspace(&state)?;
+    let (document, proposal) =
+        reports::apply_report_changes(&workspace, &node_id, &proposal_id, &accepted_ids)?;
+    Ok(ReportChangesApplied { document, proposal })
+}
+
+#[tauri::command]
 pub fn get_report(node_id: String, state: State<'_, AppState>) -> Result<ReportDocument, String> {
     let workspace = current_workspace(&state)?;
     reports::ensure_report_node(&workspace, &node_id)?;
@@ -903,5 +1057,71 @@ fn unavailable_sidecar(message: &str) -> SidecarStatus {
         restarts: 0,
         message: message.to_string(),
         checked_at: now_iso(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 手动烟雾测试：需要本机已配置 report 角色模型。
+    /// 运行 `cargo test real_report_revision_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_report_revision_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: settings::GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+        let resolved = settings::resolve_role(&settings, "report").expect("resolve report model");
+
+        let report = "# 结论\n样本量偏小，结果具有普遍性。\n\n# 方法\n采用问卷调查收集数据。";
+        let user = format!("修订要求：把结论写得更谨慎，不要夸大普遍性。\n\n报告正文：\n{report}");
+        let payload = serde_json::json!({
+            "provider": {
+                "baseUrl": resolved.provider.base_url,
+                "protocol": resolved.provider.protocol,
+                "proxy": resolved.provider.proxy,
+                "timeoutSeconds": resolved.provider.timeout_seconds
+            },
+            "modelId": resolved.model.model_id,
+            "messages": [
+                {"role": "system", "content": REPORT_REVISION_SYSTEM_PROMPT},
+                {"role": "user", "content": user}
+            ],
+            "apiKey": resolved.api_key,
+            "maxTokens": 2000,
+            "temperature": 0.2
+        });
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let reply = manager.post_json("/chat", &payload).expect("sidecar chat");
+        manager.shutdown();
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        let content = value
+            .get("content")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        let proposal = extract_json_object(content).expect("JSON proposal");
+        let changes = proposal
+            .get("changes")
+            .and_then(|item| item.as_array())
+            .expect("changes array");
+        assert!(!changes.is_empty(), "content={content}");
+        for change in changes {
+            let old_text = change
+                .get("oldText")
+                .and_then(|item| item.as_str())
+                .expect("oldText");
+            assert!(report.contains(old_text), "oldText={old_text}");
+        }
+        println!("content={content}");
     }
 }

@@ -349,6 +349,21 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             FOREIGN KEY (report_id) REFERENCES report_document(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS report_change_proposal (
+            id             TEXT PRIMARY KEY,
+            project_id     TEXT NOT NULL,
+            report_id      TEXT NOT NULL,
+            node_id        TEXT NOT NULL,
+            base_revision  INTEGER NOT NULL,
+            status         TEXT NOT NULL
+                           CHECK (status IN ('pending','partially_applied','applied','rejected','conflict')),
+            payload_json   TEXT NOT NULL,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
+            FOREIGN KEY (report_id) REFERENCES report_document(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS experiment_run (
             id              TEXT PRIMARY KEY,
             project_id      TEXT NOT NULL,

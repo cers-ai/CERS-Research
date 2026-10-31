@@ -168,8 +168,8 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
           </dl>
 
           <div className="hint">
-            文献阅读、证据矩阵、数据分析、报告编辑与实验执行将在对应模块接入后出现在这里。
-            当前工作区不展示任何模拟研究内容。
+            在对应节点中开展文献检索与来源收藏、CSV 实验分析、报告编写与导出。
+            对话、来源和运行记录均按节点隔离。
           </div>
 
           {node.type === "experiment" && (
@@ -183,6 +183,17 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
             <>
               <h3 className="node-workspace-section">报告正文</h3>
               <ReportPanel nodeId={node.id} title={node.title} />
+              <h3 className="node-workspace-section">引用文献</h3>
+              <LiteraturePanel
+                nodeId={node.id}
+                refreshKey={sourcesVersion}
+                onSaved={() => setSourcesVersion((current) => current + 1)}
+              />
+              <SavedSourcesPanel
+                nodeId={node.id}
+                refreshKey={sourcesVersion}
+                onChanged={() => setSourcesVersion((current) => current + 1)}
+              />
             </>
           )}
 

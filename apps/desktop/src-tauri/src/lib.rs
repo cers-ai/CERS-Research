@@ -70,6 +70,7 @@ pub fn run() {
             commands::get_conversation,
             commands::send_node_message,
             commands::search_academic_sources,
+            commands::search_news,
             commands::get_research_definition,
             commands::save_research_definition,
             commands::run_experiment,

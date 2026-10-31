@@ -6,7 +6,7 @@ CONTENT = """# 城市绿地与热环境
 
 ## 摘要
 
-已有资料提示绿地覆盖与局地温度存在关联。
+已有资料提示绿地覆盖与局地温度存在关联 [Wang 等, 2024](https://doi.org/10.1000/example)。
 
 | 指标 | 数值 |
 |---|---|
@@ -30,6 +30,11 @@ def test_exports_docx_and_pdf(tmp_path) -> None:
     assert result["ok"] is True
     assert docx_path.is_file()
     assert docx_path.stat().st_size > 1000
+
+    from docx import Document
+
+    text = "\n".join(paragraph.text for paragraph in Document(str(docx_path)).paragraphs)
+    assert "Wang 等, 2024（https://doi.org/10.1000/example）" in text
 
     pdf_path = tmp_path / "report.pdf"
     result = export_report(

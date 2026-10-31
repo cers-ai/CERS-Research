@@ -218,6 +218,7 @@ export interface AcademicRecord {
   type: string;
   alsoFoundIn: string[];
   retrievedAt: string;
+  publishedAt?: string | null;
 }
 
 export interface AcademicSearchResponse {
@@ -523,6 +524,16 @@ export async function searchAcademicSources(
     query,
     yearFrom: yearFrom ?? null,
     yearTo: yearTo ?? null,
+  });
+}
+
+export async function searchNews(
+  query?: string,
+  maxResults?: number,
+): Promise<AcademicSearchResponse> {
+  return invoke<AcademicSearchResponse>("search_news", {
+    query: query?.trim() || null,
+    maxResults: maxResults ?? null,
   });
 }
 

@@ -80,7 +80,8 @@ def _parse_blocks(markdown: str) -> list[tuple[str, Any]]:
 
 
 def _plain(value: str) -> str:
-    text = re.sub(r"\*\*|__|\*|_|`", "", value)
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1（\2）", value)
+    text = re.sub(r"\*\*|__|\*|_|`", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

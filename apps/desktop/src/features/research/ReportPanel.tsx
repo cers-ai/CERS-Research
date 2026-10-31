@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Modal } from "../../components/Modal";
 import {
@@ -7,11 +7,13 @@ import {
   exportReportMarkdown,
   getReport,
   listReportRevisions,
+  listSavedSources,
   saveReport,
   suggestReportChanges,
   type ReportChangeProposal,
   type ReportDocument,
   type ReportRevision,
+  type SavedSource,
 } from "../../lib/ipc";
 
 interface ReportPanelProps {
@@ -35,6 +37,11 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [proposal, setProposal] = useState<ReportChangeProposal | null>(null);
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
   const [aiError, setAiError] = useState<string | null>(null);
+  const [citeOpen, setCiteOpen] = useState(false);
+  const [sources, setSources] = useState<SavedSource[]>([]);
+  const [citeLoading, setCiteLoading] = useState(false);
+  const [citeError, setCiteError] = useState<string | null>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const loadRevisions = useCallback(async () => {
     try {
@@ -130,6 +137,57 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
     } finally {
       setExporting(null);
     }
+  };
+
+  const openCitations = async () => {
+    setCiteOpen(true);
+    setCiteError(null);
+    setCiteLoading(true);
+    try {
+      setSources(await listSavedSources(nodeId));
+    } catch (cause) {
+      setCiteError(toMessage(cause));
+    } finally {
+      setCiteLoading(false);
+    }
+  };
+
+  const insertAtCursor = (text: string) => {
+    const editor = editorRef.current;
+    const start = editor?.selectionStart ?? content.length;
+    const end = editor?.selectionEnd ?? start;
+    const next = `${content.slice(0, start)}${text}${content.slice(end)}`;
+    setContent(next);
+    setDirty(true);
+    setNotice("已插入引用");
+    window.requestAnimationFrame(() => {
+      if (!editor) {
+        return;
+      }
+      editor.focus();
+      const cursor = start + text.length;
+      editor.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const insertReferences = () => {
+    if (sources.length === 0) {
+      return;
+    }
+    const entries = sources
+      .map((source, index) => referenceEntry(source, index + 1))
+      .join("\n");
+    const section = `## 参考文献\n\n${entries}\n`;
+    const marker = "## 参考文献";
+    const existing = content.indexOf(marker);
+    const next =
+      existing >= 0
+        ? `${content.slice(0, existing).trimEnd()}\n\n${section}`
+        : `${content.trimEnd()}\n\n${section}`;
+    setContent(next);
+    setDirty(true);
+    setNotice(`已整理 ${sources.length} 条参考文献`);
+    setCiteOpen(false);
   };
 
   const openAi = () => {
@@ -230,6 +288,13 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
         <button
           type="button"
           className="btn btn--compact"
+          onClick={() => void openCitations()}
+        >
+          引用来源
+        </button>
+        <button
+          type="button"
+          className="btn btn--compact"
           disabled={!report || saving}
           onClick={openAi}
         >
@@ -264,6 +329,7 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       {notice && <div className="settings-notice">{notice}</div>}
 
       <textarea
+        ref={editorRef}
         className="report-editor"
         value={content}
         spellCheck={false}
@@ -277,6 +343,61 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       <p className="hint">
         正文自动保存并保留版本。可导出 Markdown、DOCX 与 PDF，文件保存在 Research Outputs/reports。
       </p>
+
+      {citeOpen && (
+        <Modal
+          title="引用已收藏来源"
+          description="引用会写成 Markdown 链接；仅题录或仅摘要的来源会在参考文献中标注，不冒充已读全文。"
+          onClose={() => setCiteOpen(false)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setCiteOpen(false)}>
+                关闭
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={sources.length === 0}
+                onClick={insertReferences}
+              >
+                插入参考文献
+              </button>
+            </>
+          }
+        >
+          {citeError && <div className="canvas-error">{citeError}</div>}
+          {citeLoading ? (
+            <p className="muted">正在读取已收藏来源…</p>
+          ) : sources.length === 0 ? (
+            <p className="hint">
+              当前节点还没有收藏来源。先在下方“文献检索”中检索并收藏，再回到这里插入引用。
+            </p>
+          ) : (
+            <div className="citation-list">
+              {sources.map((source) => (
+                <div className="citation-row" key={source.id}>
+                  <div className="citation-body">
+                    <strong>{source.title}</strong>
+                    <span className="muted">
+                      {citationLabel(source)} · {source.providerName}
+                    </span>
+                    <span className="tag tag--muted">
+                      {COVERAGE_LABELS[source.coverage] ?? source.coverage}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn--compact"
+                    onClick={() => insertAtCursor(citationMarkdown(source))}
+                  >
+                    插入
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
 
       {aiOpen && (
         <Modal
@@ -363,6 +484,43 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
       )}
     </div>
   );
+}
+
+const COVERAGE_LABELS: Record<string, string> = {
+  metadata_only: "仅题录",
+  abstract_only: "仅摘要",
+  fulltext: "已获全文",
+  unavailable: "不可获取",
+};
+
+function citationLabel(source: SavedSource): string {
+  const first = source.authors[0]?.trim();
+  const authors = first ? (source.authors.length > 1 ? `${first} 等` : first) : "佚名";
+  return `${authors}, ${source.year ?? "年份未知"}`;
+}
+
+function citationLink(source: SavedSource): string | null {
+  if (source.doi) {
+    return source.doi.startsWith("http") ? source.doi : `https://doi.org/${source.doi}`;
+  }
+  return source.url;
+}
+
+function citationMarkdown(source: SavedSource): string {
+  const label = citationLabel(source);
+  const link = citationLink(source);
+  return link ? `[${label}](${link})` : label;
+}
+
+function referenceEntry(source: SavedSource, index: number): string {
+  const authors = source.authors.length > 0 ? source.authors.join(", ") : "佚名";
+  const venue = source.venue ? `. ${source.venue}` : "";
+  const year = source.year ?? "年份未知";
+  const link = citationLink(source);
+  const coverage = source.coverage === "fulltext"
+    ? ""
+    : `（${COVERAGE_LABELS[source.coverage] ?? source.coverage}）`;
+  return `${index}. ${authors}. ${source.title}${venue}, ${year}. ${link ?? ""}${coverage}`;
 }
 
 function countChars(value: string): number {

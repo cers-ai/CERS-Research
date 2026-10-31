@@ -497,6 +497,24 @@ pub(crate) fn academic_sources_payload(settings: &GlobalSettings) -> Vec<serde_j
         .collect()
 }
 
+pub(crate) fn news_sources_payload(settings: &GlobalSettings) -> Vec<serde_json::Value> {
+    settings
+        .sources
+        .iter()
+        .filter(|source| source.category == "news" && source.enabled)
+        .map(|source| {
+            serde_json::json!({
+                "id": source.id,
+                "name": source.name,
+                "driver": source.driver,
+                "url": source.url,
+                "apiKey": get_secret("source", &source.id),
+                "language": source.language
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn network_payload(settings: &GlobalSettings) -> serde_json::Value {
     serde_json::json!({
         "proxyUrl": settings.network.proxy_url,
@@ -1228,6 +1246,51 @@ mod tests {
                 .and_then(|item| item.as_array())
                 .map(|items| items.len())
                 .unwrap_or(0)
+        );
+        manager.shutdown();
+    }
+
+    /// 手动烟雾测试：需要本机已启用 RSS 新闻源。
+    /// 运行 `cargo test real_news_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_news_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+
+        let payload = serde_json::json!({
+            "query": "",
+            "maxResults": 5,
+            "sources": news_sources_payload(&settings),
+            "network": network_payload(&settings)
+        });
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let reply = manager
+            .post_json("/news/search", &payload)
+            .expect("sidecar news");
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        let results = value
+            .get("results")
+            .and_then(|item| item.as_array())
+            .expect("results array");
+        assert!(!results.is_empty());
+        println!(
+            "results={} first={}",
+            results.len(),
+            results[0]
+                .get("title")
+                .and_then(|item| item.as_str())
+                .unwrap_or("")
         );
         manager.shutdown();
     }

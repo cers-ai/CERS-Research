@@ -1559,6 +1559,11 @@ code,
   gap: var(--space-2);
 }
 
+.lit-modes {
+  display: flex;
+  gap: 6px;
+}
+
 .lit-search {
   display: flex;
   flex-wrap: wrap;
@@ -1869,6 +1874,41 @@ code,
   gap: var(--space-2);
   max-height: 48vh;
   overflow: auto;
+}
+
+.citation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.citation-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.citation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.citation-body strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.citation-body .tag {
+  align-self: flex-start;
 }
 
 .report-change-row {

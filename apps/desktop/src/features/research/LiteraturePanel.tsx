@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { NewsPanel } from "./NewsPanel";
 import {
   listSavedSources,
   saveAcademicSource,
@@ -35,6 +36,7 @@ export function LiteraturePanel({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"academic" | "news">("academic");
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +120,27 @@ export function LiteraturePanel({
 
   return (
     <div className="literature-panel">
+      <div className="lit-modes">
+        <button
+          type="button"
+          className={`choice ${mode === "academic" ? "choice--active" : ""}`}
+          onClick={() => setMode("academic")}
+        >
+          学术文献
+        </button>
+        <button
+          type="button"
+          className={`choice ${mode === "news" ? "choice--active" : ""}`}
+          onClick={() => setMode("news")}
+        >
+          新闻资讯
+        </button>
+      </div>
+
+      {mode === "news" ? (
+        <NewsPanel nodeId={nodeId} refreshKey={refreshKey} onSaved={onSaved} />
+      ) : (
+        <>
       <div className="lit-search">
         <input
           value={query}
@@ -268,6 +291,8 @@ export function LiteraturePanel({
               </div>
             </>
           )}
+        </>
+      )}
         </>
       )}
     </div>

@@ -848,6 +848,45 @@ pub async fn search_academic_sources(
 }
 
 #[tauri::command]
+pub async fn search_news(
+    app: tauri::AppHandle,
+    query: Option<String>,
+    max_results: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let query = query.unwrap_or_default().trim().to_string();
+    if query.chars().count() > 200 {
+        return Err("检索关键词过长。".to_string());
+    }
+
+    let settings = settings::load_settings_for_app(&app)?;
+    let sources = settings::news_sources_payload(&settings);
+    if sources.is_empty() {
+        return Err("没有启用的新闻来源，请先在设置中启用。".to_string());
+    }
+
+    let payload = serde_json::json!({
+        "query": query,
+        "maxResults": max_results.unwrap_or(12).min(30),
+        "sources": sources,
+        "network": settings::network_payload(&settings)
+    });
+
+    let app_for_blocking = app.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut manager = state
+            .sidecar
+            .lock()
+            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+        manager.post_json("/news/search", &payload)
+    })
+    .await
+    .map_err(|error| format!("资讯检索任务失败：{error}"))??;
+
+    serde_json::from_str(&reply).map_err(|error| format!("资讯结果无法解析：{error}"))
+}
+
+#[tauri::command]
 pub fn get_conversation(
     node_id: String,
     state: State<'_, AppState>,

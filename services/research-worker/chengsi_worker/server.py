@@ -18,6 +18,7 @@ import httpx
 
 from . import __version__
 from .experiments import run_experiment
+from .news import search_news
 from .reports import export_report
 from .sources import search_sources
 
@@ -59,6 +60,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path in (
             "/chat",
             "/sources/search",
+            "/news/search",
             "/experiments/run",
             "/reports/export",
         ):
@@ -69,6 +71,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, _chat(payload))
             elif self.path == "/sources/search":
                 self._send_json(200, search_sources(payload))
+            elif self.path == "/news/search":
+                self._send_json(200, search_news(payload))
             elif self.path == "/experiments/run":
                 self._send_json(200, run_experiment(payload))
             else:

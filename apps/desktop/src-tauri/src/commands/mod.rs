@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::domain::{RuntimeInfo, SidecarStatus, WorkspaceInfo};
 use crate::mcp::{McpServerStatus, McpTool};
@@ -40,6 +40,8 @@ const REPORT_OUTLINE_SYSTEM_PROMPT: &str =
 pub struct SendNodeMessageInput {
     pub node_id: String,
     pub message: String,
+    #[serde(default)]
+    pub deep_research: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -358,7 +360,35 @@ pub fn save_research_definition(
     state: State<'_, AppState>,
 ) -> Result<ResearchDefinition, String> {
     let workspace = current_workspace(&state)?;
-    definition::save_definition(&workspace, content, confirmed_fields, base_revision)
+    let saved = definition::save_definition(&workspace, content, confirmed_fields, base_revision)?;
+    let root_goal = saved
+        .content
+        .goal
+        .clone()
+        .or_else(|| saved.content.question.clone())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(goal) = root_goal {
+        let graph = graph::load_graph(&workspace)?;
+        if let Some(root) = graph
+            .nodes
+            .iter()
+            .find(|node| node.node_type == "root")
+            .cloned()
+        {
+            if root.goal != goal {
+                graph::update_node(
+                    &workspace,
+                    UpdateNodeInput {
+                        node_id: root.id,
+                        title: root.title,
+                        goal: Some(goal),
+                    },
+                )?;
+            }
+        }
+    }
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -485,6 +515,51 @@ pub async fn propose_decomposition(
         return Err("智能分解只能在总课题或研究节点上使用。".to_string());
     }
 
+    let project_definition = definition::get_definition(&workspace).ok();
+    let mut definition_parts = Vec::new();
+    if let Some(definition) = project_definition.as_ref() {
+        if let Some(question) = definition
+            .content
+            .question
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            definition_parts.push(format!("研究问题：{question}"));
+        }
+        if let Some(goal) = definition
+            .content
+            .goal
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            definition_parts.push(format!("研究目标：{goal}"));
+        }
+        if let Some(scope) = definition
+            .content
+            .scope
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            definition_parts.push(format!("范围与边界：{scope}"));
+        }
+        if let Some(approach) = definition
+            .content
+            .approach
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            definition_parts.push(format!("方法方向：{approach}"));
+        }
+    }
+    let definition_text = if definition_parts.is_empty() {
+        "尚未形成研究定义；请基于节点目标拆解。".to_string()
+    } else {
+        definition_parts.join(
+            "
+",
+        )
+    };
+
     let settings = settings::load_settings_for_app(&app)?;
     let resolved = settings::resolve_role(&settings, "planning")?;
     let existing: Vec<serde_json::Value> = graph
@@ -504,9 +579,9 @@ pub async fn propose_decomposition(
         只输出一个 JSON 对象，不要 Markdown 代码块，不要解释。格式：\
         {\"rationale\":\"一句话理由\",\"nodes\":[{\"clientId\":\"n1\",\"type\":\"research|experiment|report\",\"title\":\"名称\",\"goal\":\"目标\"}],\
         \"edges\":[{\"sourceId\":\"当前节点ID或clientId\",\"targetId\":\"clientId\",\"kind\":\"decomposition|association\"}]}。\
-        规则：不要重复已有节点；新增节点必须有明确研究目标；分解关系从当前节点指向新研究；实验节点只用于需要独立验证的目标。";
+        规则：优先遵循项目研究定义，不要重复已有节点；新增节点必须有明确研究目标；         分解关系从当前节点指向新研究；实验节点只用于能用 CSV 数据做统计分析或机器学习验证的目标；访谈、问卷设计、政策文本比较等应创建研究节点。";
     let user = format!(
-        "当前节点：{type_label}「{title}」\n节点目标：{goal}\n当前节点 ID：{node_id}\n已有节点：{existing}",
+        "项目研究定义：\n{definition_text}\n\n当前节点：{type_label}「{title}」\n节点目标：{goal}\n当前节点 ID：{node_id}\n已有节点：{existing}",
         type_label = match context.node_type.as_str() {
             "root" => "总课题",
             "research" => "研究",
@@ -536,7 +611,7 @@ pub async fn propose_decomposition(
             {"role": "user", "content": user}
         ],
         "apiKey": resolved.api_key.clone(),
-        "maxTokens": 1200,
+        "maxTokens": 4000,
         "temperature": 0.3
     });
 
@@ -823,7 +898,7 @@ pub async fn suggest_report_outline(
             {"role": "user", "content": user}
         ],
         "apiKey": resolved.api_key.clone(),
-        "maxTokens": 1400,
+        "maxTokens": 3000,
         "temperature": 0.2
     });
 
@@ -943,7 +1018,7 @@ pub async fn suggest_report_changes(
             {"role": "user", "content": user}
         ],
         "apiKey": resolved.api_key.clone(),
-        "maxTokens": 2000,
+        "maxTokens": 3000,
         "temperature": 0.2
     });
 
@@ -1385,7 +1460,12 @@ pub async fn send_node_message(
     let app_for_blocking = app.clone();
     let workspace_for_blocking = workspace.clone();
     let turn = tauri::async_runtime::spawn_blocking(move || {
-        run_agent_turn(&app_for_blocking, &workspace_for_blocking, &node_id)
+        run_agent_turn(
+            &app_for_blocking,
+            &workspace_for_blocking,
+            &node_id,
+            input.deep_research,
+        )
     })
     .await
     .map_err(|error| format!("研究任务失败：{error}"))??;
@@ -1419,18 +1499,27 @@ fn run_agent_turn(
     app: &tauri::AppHandle,
     workspace: &WorkspaceInfo,
     node_id: &str,
+    deep_research: bool,
 ) -> Result<AgentTurn, String> {
     let context = chat::node_context(workspace, node_id)?;
     let settings = settings::load_settings_for_app(app)?;
     let resolved = settings::resolve_role(&settings, "research")?;
     let saved_sources = stored_sources::linked_sources_for_chat(workspace, node_id, 20)?;
     let linked_assets = asset_links::linked_excerpts(workspace, node_id, 4, 1_200)?;
-    let enabled_skills = skills::enabled_prompts(app, &settings).unwrap_or_default();
+    let enabled_skills = if deep_research {
+        skills::enabled_prompts(app, &settings).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
-    let mut tool_specs = builtin_tool_specs();
+    let mut tool_specs = if deep_research {
+        builtin_tool_specs()
+    } else {
+        Vec::new()
+    };
     let mut mcp_map: std::collections::HashMap<String, McpTool> = std::collections::HashMap::new();
     let mut mcp_note = String::new();
-    if !settings.mcp_servers.is_empty() {
+    if deep_research && !settings.mcp_servers.is_empty() {
         let state = app.state::<AppState>();
         let mut registry = state
             .mcp
@@ -1460,6 +1549,7 @@ fn run_agent_turn(
         &linked_assets,
         &enabled_skills,
         &mcp_note,
+        deep_research,
     );
     let mut messages = vec![serde_json::json!({
         "role": "system",
@@ -1477,7 +1567,11 @@ fn run_agent_turn(
     let mut final_content = String::new();
     let mut model = resolved.model.model_id.clone();
     let mut usage = None;
-    let max_steps = 8usize;
+    let max_steps = if deep_research { 8usize } else { 1usize };
+    let _ = app.emit(
+        "agent-status",
+        serde_json::json!({"nodeId": node_id, "phase": "thinking", "deepResearch": deep_research}),
+    );
 
     for step in 0..max_steps {
         let payload = serde_json::json!({
@@ -1582,6 +1676,18 @@ fn run_agent_turn(
                 None => serde_json::json!({}),
             };
 
+            let server_hint = mcp_map
+                .get(&name)
+                .map(|tool| format!("MCP · {}", tool.server_name))
+                .unwrap_or_else(|| match name.as_str() {
+                    "cers_academic_search" => "CERS 学术来源".to_string(),
+                    "cers_news_search" => "CERS 新闻来源".to_string(),
+                    _ => "CERS".to_string(),
+                });
+            let _ = app.emit(
+                "agent-tool-start",
+                serde_json::json!({"nodeId": node_id, "name": name, "server": server_hint}),
+            );
             let started = std::time::Instant::now();
             let executed = execute_tool(
                 app, workspace, node_id, &settings, &mcp_map, &name, &arguments,
@@ -1598,13 +1704,25 @@ fn run_agent_turn(
                     false,
                 ),
             };
-            trace.push(ToolEvent {
+            let event = ToolEvent {
                 name: name.clone(),
                 server,
                 ok,
                 summary,
                 duration_ms: started.elapsed().as_millis(),
-            });
+            };
+            let _ = app.emit(
+                "agent-tool",
+                serde_json::json!({
+                    "nodeId": node_id,
+                    "name": event.name,
+                    "server": event.server,
+                    "ok": event.ok,
+                    "summary": event.summary,
+                    "durationMs": event.duration_ms
+                }),
+            );
+            trace.push(event);
             messages.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -1616,6 +1734,11 @@ fn run_agent_turn(
             final_content = content;
         }
     }
+
+    let _ = app.emit(
+        "agent-status",
+        serde_json::json!({"nodeId": node_id, "phase": "done"}),
+    );
 
     if final_content.is_empty() {
         return Err("模型调用了研究工具，但没有给出最终回答。请重试或缩小问题范围。".to_string());
@@ -1913,6 +2036,7 @@ fn system_prompt(
     linked_assets: &[(String, String)],
     skills: &[(String, String)],
     mcp_note: &str,
+    deep_research: bool,
 ) -> String {
     let type_label = match context.node_type.as_str() {
         "root" => "总课题",
@@ -1943,11 +2067,18 @@ fn system_prompt(
         "\n当前日期：{}\n",
         chrono::Local::now().format("%Y-%m-%d")
     ));
-    prompt.push_str(
-        "\n工具使用：需要学术证据时调用 cers_academic_search；需要近期动态时调用 cers_news_search；\
-         需要核实监管文件或新闻原文时，调用名称以 mcp_ 开头的 MCP 工具读取原文。\
-         最多进行 8 轮工具调用，得到足够证据后给出结论。\n",
-    );
+    if deep_research {
+        prompt.push_str(
+            "\n工具使用：需要学术证据时调用 cers_academic_search；需要近期动态时调用 cers_news_search；\
+             需要核实监管文件或新闻原文时，调用名称以 mcp_ 开头的 MCP 工具读取原文。\
+             最多进行 8 轮工具调用，得到足够证据后给出结论。\n",
+        );
+    } else {
+        prompt.push_str(
+            "\n本轮是快速对话，不调用任何工具：直接基于已有上下文回答；\
+             涉及最新事实、文献或数据时，明确说明需要切换到深度研究核实。\n",
+        );
+    }
 
     if !sources.is_empty() {
         prompt.push_str("\n\n已收藏来源（只能引用这些元数据，不得编造其他文献）：\n");
@@ -2287,7 +2418,7 @@ pub(crate) fn run_demo_research(
          6. 不得编造数据、法规条款、市场份额或页码；证据不足处明确写“待核实”。"
     );
     chat::append_message(&workspace, &research_node_id, "user", &prompt)?;
-    let turn = run_agent_turn(app, &workspace, &research_node_id)?;
+    let turn = run_agent_turn(app, &workspace, &research_node_id, true)?;
 
     let sources = stored_sources::list_sources(&workspace, Some(&research_node_id), None)?;
     let mut content = strip_model_references(&turn.content);

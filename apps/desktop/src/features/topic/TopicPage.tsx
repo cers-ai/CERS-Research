@@ -231,6 +231,7 @@ export function TopicPage({
                 对话使用总课题节点上下文。没有证据时模型会明确说明，不会伪造文献、DOI 或实验结果。
               </p>
               <ChatPanel
+                defaultDeepResearch={false}
                 nodeId={workspace.rootNodeId}
                 className="topic-chat-panel"
                 placeholder="例如：我想比较不同城市绿地规划方式对局地热环境的影响……"

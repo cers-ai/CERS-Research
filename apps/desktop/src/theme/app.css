@@ -2691,3 +2691,125 @@ code,
   height: 18px;
   accent-color: var(--color-primary);
 }
+
+/* ---------- chat markdown and live agent progress ---------- */
+
+.node-chat-markdown {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+.node-chat-markdown h1,
+.node-chat-markdown h2,
+.node-chat-markdown h3,
+.node-chat-markdown h4 {
+  margin: 0.9em 0 0.4em;
+  font-size: 1.08em;
+}
+
+.node-chat-markdown h1 {
+  font-size: 1.2em;
+}
+
+.node-chat-markdown p {
+  margin: 0.45em 0;
+}
+
+.node-chat-markdown ul,
+.node-chat-markdown ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+}
+
+.node-chat-markdown table {
+  width: 100%;
+  margin: 0.7em 0;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.node-chat-markdown th,
+.node-chat-markdown td {
+  padding: 4px 7px;
+  border: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.node-chat-markdown th {
+  background: var(--color-surface-subtle);
+}
+
+.node-chat-markdown code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--color-surface-subtle);
+  font-family: var(--font-mono);
+}
+
+.node-chat-markdown pre {
+  overflow: auto;
+  padding: 10px;
+  border-radius: 7px;
+  background: var(--color-surface-subtle);
+  white-space: pre-wrap;
+}
+
+.node-chat-markdown a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.node-chat-user-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node-chat-live,
+.node-chat-live-trace {
+  padding: 8px 10px;
+  border: 1px dashed var(--color-primary-border);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.node-chat-live-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.node-chat-live-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.node-chat-live-row .is-ok {
+  color: #2b8a57;
+}
+
+.node-chat-live-row .is-failed {
+  color: #b54747;
+}
+
+.node-chat-mode {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.node-chat-mode input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-primary);
+}

@@ -164,7 +164,9 @@ export function OverviewPage({
         <article className="card card--pad">
           <h2 className="section-title">项目理解与当前目标</h2>
           <p className="muted">
-            这个项目已经建立本地工作区与总课题节点。研究定义尚未形成，需要你在选题对话中确认研究问题、目标与边界。
+            {definition && (definition.content.question || definition.content.goal)
+              ? "研究定义已形成，以下内容与选题页、总课题节点共享同一份事实源。"
+              : "这个项目已经建立本地工作区与总课题节点。研究定义尚未形成，需要你在选题对话中确认研究问题、目标与边界。"}
           </p>
           <div className="definition-placeholder">
             {definition && (definition.content.goal || definition.content.question) ? (
@@ -211,10 +213,22 @@ export function OverviewPage({
               <span className="tag tag--warning">尚未确定推荐</span>
             </div>
             <p className="muted">
-              项目刚建立，还没有真实任务、成果或证据缺口可以作为推荐依据。系统不会虚构研究进度。
+              {definition && (definition.content.question || definition.content.goal)
+                ? "研究定义已形成。下一步可进入画布，把研究问题拆成可执行的研究节点，并在节点工作区开展检索与写作。"
+                : "项目刚建立，还没有真实任务、成果或证据缺口可以作为推荐依据。系统不会虚构研究进度。"}
             </p>
-            <button type="button" className="btn btn--compact" onClick={onOpenTopic}>
-              先明确研究目标
+            <button
+              type="button"
+              className="btn btn--compact"
+              onClick={
+                definition && (definition.content.question || definition.content.goal)
+                  ? onOpenCanvas
+                  : onOpenTopic
+              }
+            >
+              {definition && (definition.content.question || definition.content.goal)
+                ? "打开科研图"
+                : "先明确研究目标"}
             </button>
           </article>
 

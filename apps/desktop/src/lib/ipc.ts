@@ -691,9 +691,10 @@ export async function getConversation(nodeId: string): Promise<ChatMessage[]> {
 export async function sendNodeMessage(
   nodeId: string,
   message: string,
+  deepResearch = false,
 ): Promise<ConversationReply> {
   return invoke<ConversationReply>("send_node_message", {
-    input: { nodeId, message },
+    input: { nodeId, message, deepResearch },
   });
 }
 

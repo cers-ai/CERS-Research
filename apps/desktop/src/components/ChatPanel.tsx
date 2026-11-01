@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   getConversation,
   sendNodeMessage,
   type ChatMessage,
+  type ToolEvent,
 } from "../lib/ipc";
 
 interface ChatPanelProps {
@@ -11,19 +15,29 @@ interface ChatPanelProps {
   placeholder?: string;
   emptyText?: string;
   className?: string;
+  defaultDeepResearch?: boolean;
+}
+
+interface LiveTool {
+  name: string;
+  server: string;
 }
 
 export function ChatPanel({
   nodeId,
   placeholder = "提出研究问题、要求比较方法或继续推进当前节点……",
-  emptyText = "围绕当前节点目标提问。模型回复不会伪造文献、DOI、页码或实验结果。",
+  emptyText = "围绕当前节点目标提问。深度研究模式会调用学术检索、资讯与 MCP 工具，并在对话中保留工具轨迹。",
   className,
+  defaultDeepResearch = false,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deepResearch, setDeepResearch] = useState(defaultDeepResearch);
+  const [liveTool, setLiveTool] = useState<LiveTool | null>(null);
+  const [liveEvents, setLiveEvents] = useState<ToolEvent[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -32,6 +46,8 @@ export function ChatPanel({
     setInput("");
     setError(null);
     setLoaded(false);
+    setLiveTool(null);
+    setLiveEvents([]);
 
     getConversation(nodeId)
       .then((items) => {
@@ -53,11 +69,51 @@ export function ChatPanel({
   }, [nodeId]);
 
   useEffect(() => {
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+
+    const register = async () => {
+      const start = await listen<{ nodeId: string; name: string; server: string }>(
+        "agent-tool-start",
+        (event) => {
+          if (!disposed && event.payload.nodeId === nodeId) {
+            setLiveTool({ name: event.payload.name, server: event.payload.server });
+          }
+        },
+      );
+      const finish = await listen<ToolEvent & { nodeId: string }>("agent-tool", (event) => {
+        if (!disposed && event.payload.nodeId === nodeId) {
+          setLiveTool(null);
+          setLiveEvents((current) => [...current, event.payload]);
+        }
+      });
+      const status = await listen<{ nodeId: string; phase: string }>(
+        "agent-status",
+        (event) => {
+          if (!disposed && event.payload.nodeId === nodeId && event.payload.phase === "done") {
+            setLiveTool(null);
+          }
+        },
+      );
+      unlisteners.push(start, finish, status);
+    };
+
+    void register();
+
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
+    };
+  }, [nodeId]);
+
+  useEffect(() => {
     const element = logRef.current;
     if (element) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [messages, sending]);
+  }, [messages, sending, liveTool, liveEvents]);
 
   const send = async () => {
     const text = input.trim();
@@ -68,6 +124,8 @@ export function ChatPanel({
     setSending(true);
     setError(null);
     setInput("");
+    setLiveTool(null);
+    setLiveEvents([]);
     setMessages((current) => [
       ...current,
       {
@@ -79,7 +137,7 @@ export function ChatPanel({
     ]);
 
     try {
-      const reply = await sendNodeMessage(nodeId, text);
+      const reply = await sendNodeMessage(nodeId, text, deepResearch);
       setMessages(reply.messages);
     } catch (cause) {
       setError(toMessage(cause));
@@ -90,6 +148,7 @@ export function ChatPanel({
       }
     } finally {
       setSending(false);
+      setLiveTool(null);
     }
   };
 
@@ -123,10 +182,49 @@ export function ChatPanel({
                 </ul>
               </details>
             )}
-            <p>{message.body}</p>
+            {message.role === "assistant" ? (
+              <div className="node-chat-markdown markdown-body">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: ({ href, children }) => {
+                      const safe =
+                        href && /^(https?:|mailto:)/i.test(href) ? href : undefined;
+                      return (
+                        <a href={safe} target="_blank" rel="noreferrer">
+                          {children}
+                        </a>
+                      );
+                    },
+                  }}
+                >
+                  {message.body}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <p className="node-chat-user-text">{message.body}</p>
+            )}
           </div>
         ))}
-        {sending && <div className="node-chat-typing">科研伙伴正在思考…</div>}
+        {sending && liveTool && (
+          <div className="node-chat-live">
+            正在调用 {liveTool.server} · <span className="mono">{liveTool.name}</span>…
+          </div>
+        )}
+        {sending && liveEvents.length > 0 && (
+          <div className="node-chat-live-trace">
+            {liveEvents.map((event, index) => (
+              <div key={`${event.name}-${index}`} className="node-chat-live-row">
+                <span className={event.ok ? "is-ok" : "is-failed"}>
+                  {event.ok ? "✓" : "!"}
+                </span>
+                <span className="mono">{event.name}</span>
+                <span>{event.summary}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {sending && !liveTool && <div className="node-chat-typing">科研伙伴正在思考…</div>}
         {error && <div className="canvas-error">{error}</div>}
       </div>
 
@@ -145,6 +243,18 @@ export function ChatPanel({
           }}
         />
         <div className="node-chat-compose-actions">
+          <label
+            className="node-chat-mode"
+            title="开启后会调用学术检索、资讯与 MCP 工具，耗时更长"
+          >
+            <input
+              type="checkbox"
+              checked={deepResearch}
+              disabled={sending}
+              onChange={(event) => setDeepResearch(event.target.checked)}
+            />
+            深度研究
+          </label>
           <span className="muted">Enter 发送 · Shift+Enter 换行</span>
           <button
             type="button"
@@ -152,7 +262,7 @@ export function ChatPanel({
             disabled={sending || !input.trim()}
             onClick={() => void send()}
           >
-            {sending ? "思考中…" : "发送"}
+            {sending ? "研究中…" : "发送"}
           </button>
         </div>
       </div>

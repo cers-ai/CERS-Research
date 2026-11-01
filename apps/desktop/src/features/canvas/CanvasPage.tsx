@@ -238,8 +238,11 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
 
     const parent = snapshot?.nodes.find((node) => node.id === addParentId) ?? null;
     const relation = parent ? addRelation : "none";
+    const siblings = parent
+      ? snapshot?.edges.filter((edge) => edge.source === parent.id).length ?? 0
+      : 0;
     const x = parent ? parent.x + 340 : 120;
-    const y = parent ? parent.y : 220;
+    const y = parent ? parent.y + siblings * 170 : 220;
 
     try {
       const knownNodes = new Set(snapshot?.nodes.map((node) => node.id) ?? []);
@@ -431,7 +434,9 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
         goal: item.goal.trim(),
       }));
       const edges: ProposalEdge[] = included
-        .filter((item) => item.relation !== "none")
+        .filter(
+          (item) => item.relation === "decomposition" || item.relation === "association",
+        )
         .map((item) => ({
           sourceId: proposal.anchorNodeId,
           targetId: item.clientId,

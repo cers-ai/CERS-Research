@@ -219,7 +219,7 @@ export function NodeWorkspace({ node, onClose }: NodeWorkspaceProps) {
           )}
 
           <h3 className="node-workspace-section">科研伙伴</h3>
-          <ChatPanel nodeId={node.id} />
+          <ChatPanel nodeId={node.id} defaultDeepResearch />
 
           <div className="node-workspace-actions">
             <button type="button" className="btn btn--compact" onClick={onClose}>

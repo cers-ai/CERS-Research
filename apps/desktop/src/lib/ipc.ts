@@ -181,6 +181,12 @@ export interface SkillSettings {
   enabled: string[];
 }
 
+export interface UpdateSettings {
+  autoCheck: boolean;
+  skippedVersion: string | null;
+  lastCheckedAt: string | null;
+}
+
 export interface GlobalSettings {
   providers: ProviderConfig[];
   sources: SourceConfig[];
@@ -190,6 +196,29 @@ export interface GlobalSettings {
   autonomy: string;
   mcpServers: McpServerConfig[];
   skills: SkillSettings;
+  updates: UpdateSettings;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  skipped: boolean;
+  releaseUrl: string | null;
+  notes: string | null;
+  publishedAt: string | null;
+  checkedAt: string;
+  message: string | null;
+}
+
+export interface ModelReadiness {
+  configured: boolean;
+  role: string;
+  providerId: string | null;
+  providerName: string | null;
+  modelId: string | null;
+  modelName: string | null;
+  message: string;
 }
 
 export interface SettingsView {
@@ -607,6 +636,22 @@ export async function callMcpTool(
 
 export async function shutdownMcpServer(serverId: string): Promise<void> {
   return invoke<void>("shutdown_mcp_server", { serverId });
+}
+
+export async function getModelReadiness(): Promise<ModelReadiness> {
+  return invoke<ModelReadiness>("model_readiness");
+}
+
+export async function checkForUpdates(force = false): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("check_for_updates", { force });
+}
+
+export async function skipUpdateVersion(version: string): Promise<void> {
+  return invoke<void>("skip_update_version", { version });
+}
+
+export async function setAutoUpdateCheck(autoCheck: boolean): Promise<GlobalSettings> {
+  return invoke<GlobalSettings>("set_auto_update_check", { autoCheck });
 }
 
 export async function getGlobalSettings(): Promise<SettingsView> {

@@ -128,6 +128,29 @@ pub struct GlobalSettings {
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub skills: SkillSettings,
+    #[serde(default)]
+    pub updates: UpdateSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSettings {
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    #[serde(default)]
+    pub skipped_version: Option<String>,
+    #[serde(default)]
+    pub last_checked_at: Option<String>,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            skipped_version: None,
+            last_checked_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +406,7 @@ fn seed_settings() -> GlobalSettings {
         autonomy: "balanced".to_string(),
         mcp_servers: Vec::new(),
         skills: SkillSettings::default(),
+        updates: UpdateSettings::default(),
     }
 }
 
@@ -1029,7 +1053,7 @@ fn chat_endpoint(provider: &ProviderConfig) -> String {
     format!("{base}/chat/completions")
 }
 
-fn http_agent(proxy: Option<&str>, timeout_seconds: u64) -> Result<ureq::Agent, String> {
+pub(crate) fn http_agent(proxy: Option<&str>, timeout_seconds: u64) -> Result<ureq::Agent, String> {
     let mut builder =
         ureq::AgentBuilder::new().timeout(Duration::from_secs(timeout_seconds.clamp(5, 120)));
     if let Some(proxy) = proxy.map(str::trim).filter(|value| !value.is_empty()) {

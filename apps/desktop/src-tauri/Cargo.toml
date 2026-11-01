@@ -1,6 +1,6 @@
 [package]
 name = "chengsi-desktop"
-version = "0.1.0"
+version = "0.0.1"
 description = "澄思学术桌面版宿主"
 edition = "2021"
 rust-version = "1.95"
@@ -29,6 +29,8 @@ ureq = { version = "2.10", features = ["json"] }
 urlencoding = "2"
 pdf-extract = "0.12.1"
 zip = { version = "9.2.0", default-features = false, features = ["deflate"] }
+tauri-plugin-opener = "2.7.2"
+semver = "1.0.28"
 
 [dev-dependencies]
 tempfile = "3"

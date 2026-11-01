@@ -19,6 +19,7 @@ interface OverviewPageProps {
   onOpenCanvas: () => void;
   onOpenTopic: () => void;
   onOpenAssets: () => void;
+  onCloseWorkspace: () => void;
   onRestored: (workspace: WorkspaceInfo) => void;
 }
 
@@ -31,6 +32,7 @@ export function OverviewPage({
   onOpenCanvas,
   onOpenTopic,
   onOpenAssets,
+  onCloseWorkspace,
   onRestored,
 }: OverviewPageProps) {
   const [definition, setDefinition] = useState<ResearchDefinition | null>(null);
@@ -149,6 +151,12 @@ export function OverviewPage({
           <button type="button" className="btn btn--primary" onClick={onOpenCanvas}>
             打开科研图
           </button>
+          <button type="button" className="btn" disabled={busy} onClick={onOpenFolder}>
+            切换文件夹
+          </button>
+          <button type="button" className="btn btn--ghost" disabled={busy} onClick={onCloseWorkspace}>
+            关闭项目
+          </button>
         </div>
       </header>
 
@@ -208,6 +216,22 @@ export function OverviewPage({
             <button type="button" className="btn btn--compact" onClick={onOpenTopic}>
               先明确研究目标
             </button>
+          </article>
+
+          <article className="card card--pad">
+            <h2 className="section-title">工作区</h2>
+            <p className="muted">
+              当前项目：{workspace.workspacePath}。关闭项目只会释放当前工作区，不会删除任何文件；
+              之后的扫描、对话和报告仍保存在原文件夹的 <code>.cers-data</code> 中。
+            </p>
+            <div className="row">
+              <button type="button" className="btn btn--compact" onClick={onOpenFolder}>
+                打开其他文件夹
+              </button>
+              <button type="button" className="btn btn--ghost btn--compact" onClick={onCloseWorkspace}>
+                关闭当前项目
+              </button>
+            </div>
           </article>
 
           <article className="card card--pad">

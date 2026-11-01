@@ -15,17 +15,29 @@ import {
   testProvider,
   testSource,
 } from "../../lib/ipc";
+import { AboutSettings } from "../updates/AboutSettings";
 import { AgentSettings } from "./AgentSettings";
 import { ProviderSettings } from "./ProviderSettings";
 import { SourceSettings } from "./SourceSettings";
 import { toMessage } from "./settingsTypes";
 
-type SettingsTab = "models" | "academic" | "news" | "agent" | "network" | "runtime";
+type SettingsTab =
+  | "models"
+  | "academic"
+  | "news"
+  | "agent"
+  | "network"
+  | "runtime"
+  | "about";
 
 interface SettingsPageProps {
   runtime: RuntimeInfo | null;
   workspace: WorkspaceInfo | null;
   busy: boolean;
+  initialTab?: SettingsTab;
+  needsModelSetup?: boolean;
+  modelSetupMessage?: string | null;
+  onSettingsSaved?: () => void;
   onRefreshSidecar: () => void;
   onCloseWorkspace: () => void;
 }
@@ -44,16 +56,21 @@ const TABS: Array<[SettingsTab, string]> = [
   ["agent", "MCP 与技能"],
   ["network", "网络与隐私"],
   ["runtime", "运行时"],
+  ["about", "版本更新"],
 ];
 
 export function SettingsPage({
   runtime,
   workspace,
   busy,
+  initialTab = "models",
+  needsModelSetup = false,
+  modelSetupMessage = null,
+  onSettingsSaved,
   onRefreshSidecar,
   onCloseWorkspace,
 }: SettingsPageProps) {
-  const [tab, setTab] = useState<SettingsTab>("models");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [view, setView] = useState<SettingsView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,10 +113,11 @@ export function SettingsPage({
       setView(updated);
       setError(null);
       setNotice("设置已保存");
+      onSettingsSaved?.();
     } catch (cause) {
       setError(toMessage(cause));
     }
-  }, []);
+  }, [onSettingsSaved]);
 
   const runTest = useCallback(
     async (kind: "model" | "source", id: string) => {
@@ -138,6 +156,7 @@ export function SettingsPage({
       setKeyTarget(null);
       setKeyValue("");
       setNotice(hasKey ? "密钥已保存到系统凭据库" : "密钥已清除");
+      onSettingsSaved?.();
     } catch (cause) {
       setError(toMessage(cause));
     } finally {
@@ -188,6 +207,22 @@ export function SettingsPage({
 
       {notice && <div className="settings-notice">{notice}</div>}
 
+      {needsModelSetup && (
+        <div className="setup-banner" role="alert">
+          <div>
+            <strong>尚未配置可用模型</strong>
+            <p>{modelSetupMessage ?? "模型未配置，研究、对话与报告能力都无法使用。请先完成模型与密钥配置。"}</p>
+          </div>
+          <button
+            type="button"
+            className="btn btn--primary btn--compact"
+            onClick={() => setTab("models")}
+          >
+            去配置模型
+          </button>
+        </div>
+      )}
+
       <nav className="settings-tabs" aria-label="设置分类">
         {TABS.map(([value, label]) => (
           <button
@@ -215,6 +250,13 @@ export function SettingsPage({
       )}
       {view && tab === "network" && (
         <NetworkPanel settings={view.settings} onSave={handlers.onPersist} />
+      )}
+      {view && tab === "about" && (
+        <AboutSettings
+          runtime={runtime}
+          settings={view.settings}
+          onSettingsSaved={() => onSettingsSaved?.()}
+        />
       )}
       {tab === "runtime" && (
         <RuntimePanel

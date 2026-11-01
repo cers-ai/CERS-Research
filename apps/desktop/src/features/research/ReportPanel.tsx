@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Modal } from "../../components/Modal";
 import {
@@ -49,6 +51,7 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [outline, setOutline] = useState<ReportOutline | null>(null);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const [pending, setPending] = useState<ReportChangeProposal | null>(null);
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const loadRevisions = useCallback(async () => {
@@ -323,6 +326,22 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
           {saving ? "保存中…" : dirty ? "有未保存修改" : "已自动保存"}
         </span>
         <span className="muted">{countChars(content)} 字符</span>
+        <div className="report-view-toggle" role="group" aria-label="报告视图">
+          <button
+            type="button"
+            className={`choice ${mode === "edit" ? "choice--active" : ""}`}
+            onClick={() => setMode("edit")}
+          >
+            编辑
+          </button>
+          <button
+            type="button"
+            className={`choice ${mode === "preview" ? "choice--active" : ""}`}
+            onClick={() => setMode("preview")}
+          >
+            预览
+          </button>
+        </div>
         <div className="grow" />
         {revisions.length > 0 && (
           <select
@@ -411,20 +430,45 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
         </div>
       )}
 
-      <textarea
-        ref={editorRef}
-        className="report-editor"
-        value={content}
-        spellCheck={false}
-        placeholder={`# ${title}\n\n从提纲开始，或直接写下正文。支持 Markdown：标题、列表、表格、引用。`}
-        onChange={(event) => {
-          setContent(event.target.value);
-          setDirty(true);
-        }}
-      />
+      {mode === "edit" ? (
+        <textarea
+          ref={editorRef}
+          className="report-editor"
+          value={content}
+          spellCheck={false}
+          placeholder={`# ${title}\n\n从提纲开始，或直接写下正文。支持 Markdown：标题、列表、表格、引用。`}
+          onChange={(event) => {
+            setContent(event.target.value);
+            setDirty(true);
+          }}
+        />
+      ) : (
+        <div className="report-preview markdown-body">
+          {content.trim() ? (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => {
+                  const safe = href && /^(https?:|mailto:)/i.test(href) ? href : undefined;
+                  return (
+                    <a href={safe} target="_blank" rel="noreferrer">
+                      {children}
+                    </a>
+                  );
+                },
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+          ) : (
+            <p className="muted">还没有正文。切换到“编辑”开始写，或先生成提纲。</p>
+          )}
+        </div>
+      )}
 
       <p className="hint">
-        正文自动保存并保留版本。可导出 Markdown、DOCX 与 PDF，文件保存在 Research Outputs/reports。
+        正文自动保存并保留版本。预览只渲染 Markdown，不执行原始 HTML；可导出 Markdown、DOCX 与 PDF，
+        文件保存在 Research Outputs/reports。
       </p>
 
       {outlineOpen && (

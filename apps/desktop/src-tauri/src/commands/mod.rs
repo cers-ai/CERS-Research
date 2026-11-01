@@ -44,6 +44,18 @@ pub struct SendNodeMessageInput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelReadiness {
+    pub configured: bool,
+    pub role: String,
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub model_id: Option<String>,
+    pub model_name: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationReply {
     pub messages: Vec<ChatMessage>,
     pub model: String,
@@ -176,6 +188,60 @@ pub fn restore_project_backup(
         .map_err(|_| "应用状态不可用，请重启应用。".to_string())?;
     *guard = Some(restored.clone());
     Ok(restored)
+}
+
+#[tauri::command]
+pub fn model_readiness(app: tauri::AppHandle) -> ModelReadiness {
+    let role = "research";
+    match settings::load_settings_for_app(&app)
+        .and_then(|settings| settings::resolve_role(&settings, role))
+    {
+        Ok(resolved) => ModelReadiness {
+            configured: true,
+            role: role.to_string(),
+            provider_id: Some(resolved.provider.id),
+            provider_name: Some(resolved.provider.name),
+            model_id: Some(resolved.model.model_id),
+            model_name: Some(resolved.model.display_name),
+            message: "模型已就绪。".to_string(),
+        },
+        Err(error) => ModelReadiness {
+            configured: false,
+            role: role.to_string(),
+            provider_id: None,
+            provider_name: None,
+            model_id: None,
+            model_name: None,
+            message: error,
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn check_for_updates(
+    app: tauri::AppHandle,
+    force: Option<bool>,
+) -> Result<crate::updates::UpdateInfo, String> {
+    let app_for_blocking = app.clone();
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::updates::check_for_updates(&app_for_blocking, force)
+    })
+    .await
+    .map_err(|error| format!("更新检查任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub fn skip_update_version(app: tauri::AppHandle, version: String) -> Result<(), String> {
+    crate::updates::skip_version(&app, &version)
+}
+
+#[tauri::command]
+pub fn set_auto_update_check(
+    app: tauri::AppHandle,
+    auto_check: bool,
+) -> Result<settings::GlobalSettings, String> {
+    crate::updates::set_auto_check(&app, auto_check)
 }
 
 #[tauri::command]

@@ -5,6 +5,7 @@ mod settings;
 mod sidecar;
 mod skills;
 mod storage;
+mod updates;
 
 use std::sync::Mutex;
 
@@ -33,6 +34,7 @@ impl Default for AppState {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
             if let Ok(resource_dir) = app.path().resource_dir() {
@@ -77,6 +79,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::runtime_info,
+            commands::model_readiness,
+            commands::check_for_updates,
+            commands::skip_update_version,
+            commands::set_auto_update_check,
             commands::open_workspace,
             commands::create_project_backup,
             commands::restore_project_backup,

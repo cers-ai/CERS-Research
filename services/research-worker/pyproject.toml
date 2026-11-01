@@ -1,6 +1,6 @@
 [project]
 name = "chengsi-research-worker"
-version = "0.1.0"
+version = "0.0.1"
 description = "澄思学术 Python Sidecar：Agent、模型适配、来源检索、解析、实验与报告"
 requires-python = ">=3.13,<3.14"
 dependencies = [

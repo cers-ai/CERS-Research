@@ -15,11 +15,12 @@ import {
   testProvider,
   testSource,
 } from "../../lib/ipc";
+import { AgentSettings } from "./AgentSettings";
 import { ProviderSettings } from "./ProviderSettings";
 import { SourceSettings } from "./SourceSettings";
 import { toMessage } from "./settingsTypes";
 
-type SettingsTab = "models" | "academic" | "news" | "network" | "runtime";
+type SettingsTab = "models" | "academic" | "news" | "agent" | "network" | "runtime";
 
 interface SettingsPageProps {
   runtime: RuntimeInfo | null;
@@ -40,6 +41,7 @@ const TABS: Array<[SettingsTab, string]> = [
   ["models", "模型服务"],
   ["academic", "学术来源"],
   ["news", "新闻资讯"],
+  ["agent", "MCP 与技能"],
   ["network", "网络与隐私"],
   ["runtime", "运行时"],
 ];
@@ -144,7 +146,7 @@ export function SettingsPage({
   }, [keyTarget, keyValue, load]);
 
   const handlers = {
-    onPersist: (next: GlobalSettings) => void persist(next),
+    onPersist: (next: GlobalSettings) => persist(next),
     onTest: (kind: "model" | "source", id: string) => void runTest(kind, id),
     onSetKey: (
       kind: "model" | "source",
@@ -207,6 +209,9 @@ export function SettingsPage({
       )}
       {view && tab === "news" && (
         <SourceSettings view={view} category="news" {...handlers} />
+      )}
+      {view && tab === "agent" && (
+        <AgentSettings settings={view.settings} onPersist={handlers.onPersist} />
       )}
       {view && tab === "network" && (
         <NetworkPanel settings={view.settings} onSave={handlers.onPersist} />

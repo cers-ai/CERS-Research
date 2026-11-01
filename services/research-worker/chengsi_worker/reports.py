@@ -173,6 +173,13 @@ def _write_pdf(markdown: str, title: str, path: Path) -> None:
         leading=28,
         spaceAfter=14,
     )
+    cell_style = ParagraphStyle(
+        "Cell",
+        parent=base,
+        fontSize=8.5,
+        leading=12,
+        spaceAfter=0,
+    )
 
     document = SimpleDocTemplate(
         str(path),
@@ -194,8 +201,20 @@ def _write_pdf(markdown: str, title: str, path: Path) -> None:
             story.append(Paragraph(f"• {_escape(str(value))}", base))
         elif kind == "table":
             rows: list[list[str]] = value
-            data = [[Paragraph(_escape(cell), base) for cell in row] for row in rows]
-            table = Table(data, repeatRows=1)
+            columns = max(len(row) for row in rows)
+            data = [
+                [
+                    Paragraph(_escape(row[index] if index < len(row) else ""), cell_style)
+                    for index in range(columns)
+                ]
+                for row in rows
+            ]
+            available = A4[0] - 44 * mm
+            table = Table(
+                data,
+                colWidths=[available / columns] * columns,
+                repeatRows=1,
+            )
             table.setStyle(
                 TableStyle(
                     [

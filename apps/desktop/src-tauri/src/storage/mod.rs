@@ -174,6 +174,26 @@ fn load_or_create_config(root: &Path, cers_path: &Path) -> Result<CersConfig, St
     Ok(config)
 }
 
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), StorageError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+    drop(statement);
+    if !exists {
+        connection.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
+}
+
 fn migrate(connection: &Connection) -> Result<(), StorageError> {
     connection.execute_batch(
         r#"
@@ -281,6 +301,7 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             node_id     TEXT NOT NULL,
             role        TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
             body        TEXT NOT NULL,
+            meta_json   TEXT,
             created_at  TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE,
             FOREIGN KEY (node_id) REFERENCES node(id) ON DELETE CASCADE
@@ -408,6 +429,8 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
         );
         "#,
     )?;
+
+    ensure_column(connection, "conversation", "meta_json", "TEXT")?;
 
     let current: Option<String> = connection
         .query_row(

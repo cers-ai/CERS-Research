@@ -106,6 +106,23 @@ export function ChatPanel({
             <span className="node-chat-author">
               {message.role === "user" ? "你" : "科研伙伴"}
             </span>
+            {message.meta?.toolTrace && message.meta.toolTrace.length > 0 && (
+              <details className="node-chat-tools">
+                <summary>本轮调用 {message.meta.toolTrace.length} 个工具</summary>
+                <ul>
+                  {message.meta.toolTrace.map((event, index) => (
+                    <li key={`${event.name}-${index}`}>
+                      <span className={`tag ${event.ok ? "tag--success" : "tag--warning"}`}>
+                        {event.server}
+                      </span>
+                      <span className="mono">{event.name}</span>
+                      <span>{event.summary}</span>
+                      <span className="muted">{event.durationMs} ms</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
             <p>{message.body}</p>
           </div>
         ))}

@@ -124,6 +124,33 @@ pub struct GlobalSettings {
     pub network: NetworkSettings,
     pub privacy: PrivacySettings,
     pub autonomy: String,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub skills: SkillSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSettings {
+    #[serde(default)]
+    pub enabled: Vec<String>,
 }
 
 impl Default for GlobalSettings {
@@ -354,6 +381,8 @@ fn seed_settings() -> GlobalSettings {
         network: NetworkSettings::default(),
         privacy: PrivacySettings::default(),
         autonomy: "balanced".to_string(),
+        mcp_servers: Vec::new(),
+        skills: SkillSettings::default(),
     }
 }
 
@@ -414,6 +443,14 @@ pub(crate) struct ResolvedModel {
 
 pub(crate) fn load_settings_for_app(app: &tauri::AppHandle) -> Result<GlobalSettings, String> {
     load_settings(app)
+}
+
+pub(crate) fn save_settings_for_app(
+    app: &tauri::AppHandle,
+    settings: &GlobalSettings,
+) -> Result<(), String> {
+    let path = settings_path(app)?;
+    write_settings(&path, settings)
 }
 
 pub(crate) fn resolve_role(settings: &GlobalSettings, role: &str) -> Result<ResolvedModel, String> {
@@ -532,6 +569,22 @@ fn write_settings(path: &PathBuf, settings: &GlobalSettings) -> Result<(), Strin
 }
 
 fn validate_settings(settings: &GlobalSettings) -> Result<(), String> {
+    let mut mcp_ids = std::collections::HashSet::new();
+    for server in &settings.mcp_servers {
+        let id = server.id.trim();
+        if id.is_empty() || !mcp_ids.insert(id.to_string()) {
+            return Err("MCP 服务 ID 为空或重复。".to_string());
+        }
+        if server.name.trim().is_empty() {
+            return Err(format!("MCP 服务 {id} 缺少名称。"));
+        }
+        if server.command.trim().is_empty() {
+            return Err(format!("MCP 服务 {id} 缺少启动命令。"));
+        }
+        if server.args.len() > 32 || server.env.len() > 32 {
+            return Err(format!("MCP 服务 {id} 的参数过多。"));
+        }
+    }
     let mut provider_ids = std::collections::HashSet::new();
     for provider in &settings.providers {
         if provider.id.trim().is_empty() || !provider_ids.insert(provider.id.clone()) {

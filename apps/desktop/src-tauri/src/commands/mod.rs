@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use crate::domain::{RuntimeInfo, SidecarStatus, WorkspaceInfo};
+use crate::mcp::{McpServerStatus, McpTool};
 use crate::settings;
+use crate::skills::{self as skills, SkillInfo};
 use crate::storage::asset_links::{self as asset_links, LinkedAsset};
 use crate::storage::assets::{self, AssetItem, ScanSummary};
 use crate::storage::chat::{self, ChatMessage, NodeChatContext};
@@ -46,6 +48,17 @@ pub struct ConversationReply {
     pub messages: Vec<ChatMessage>,
     pub model: String,
     pub usage: Option<serde_json::Value>,
+    pub tool_trace: Vec<ToolEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolEvent {
+    pub name: String,
+    pub server: String,
+    pub ok: bool,
+    pub summary: String,
+    pub duration_ms: u128,
 }
 
 #[derive(Debug, Serialize)]
@@ -1145,6 +1158,99 @@ pub async fn search_academic_sources(
 }
 
 #[tauri::command]
+pub async fn list_skills(app: tauri::AppHandle) -> Result<Vec<SkillInfo>, String> {
+    let settings = settings::load_settings_for_app(&app)?;
+    skills::list_skills(&app, &settings)
+}
+
+#[tauri::command]
+pub async fn set_skill_enabled(
+    app: tauri::AppHandle,
+    skill_id: String,
+    enabled: bool,
+) -> Result<Vec<SkillInfo>, String> {
+    skills::set_enabled(&app, &skill_id, enabled)
+}
+
+#[tauri::command]
+pub async fn list_mcp_tools(app: tauri::AppHandle) -> Result<Vec<McpTool>, String> {
+    let settings = settings::load_settings_for_app(&app)?;
+    let app_for_blocking = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut registry = state
+            .mcp
+            .lock()
+            .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+        registry.tools(&settings.mcp_servers)
+    })
+    .await
+    .map_err(|error| format!("MCP 工具列表任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn test_mcp_server(
+    app: tauri::AppHandle,
+    server_id: String,
+) -> Result<McpServerStatus, String> {
+    let settings = settings::load_settings_for_app(&app)?;
+    let config = settings
+        .mcp_servers
+        .iter()
+        .find(|server| server.id == server_id)
+        .cloned()
+        .ok_or_else(|| "MCP 服务不存在。".to_string())?;
+    let app_for_blocking = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut registry = state
+            .mcp
+            .lock()
+            .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+        Ok(registry.status(&config))
+    })
+    .await
+    .map_err(|error| format!("MCP 连接测试任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn call_mcp_tool(
+    app: tauri::AppHandle,
+    server_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+) -> Result<String, String> {
+    let settings = settings::load_settings_for_app(&app)?;
+    let config = settings
+        .mcp_servers
+        .iter()
+        .find(|server| server.id == server_id)
+        .cloned()
+        .ok_or_else(|| "MCP 服务不存在。".to_string())?;
+    let app_for_blocking = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_for_blocking.state::<AppState>();
+        let mut registry = state
+            .mcp
+            .lock()
+            .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+        registry.call(&config, &tool_name, arguments)
+    })
+    .await
+    .map_err(|error| format!("MCP 工具调用任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub fn shutdown_mcp_server(server_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut registry = state
+        .mcp
+        .lock()
+        .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+    registry.shutdown(&server_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn search_news(
     app: tauri::AppHandle,
     query: Option<String>,
@@ -1207,19 +1313,93 @@ pub async fn send_node_message(
         return Err("消息过长，请缩短到 8000 字以内。".to_string());
     }
 
-    let context = chat::node_context(&workspace, &input.node_id)?;
-    let settings = settings::load_settings_for_app(&app)?;
-    let resolved = settings::resolve_role(&settings, "research")?;
-
     chat::append_message(&workspace, &input.node_id, "user", &message)?;
-    let history = chat::load_messages(&workspace, &input.node_id, 12)?;
-    let saved_sources = stored_sources::linked_sources_for_chat(&workspace, &input.node_id, 20)?;
-    let linked_assets = asset_links::linked_excerpts(&workspace, &input.node_id, 4, 1_200)?;
-    let system = system_prompt(&context, &saved_sources, &linked_assets);
+
+    let node_id = input.node_id.clone();
+    let app_for_blocking = app.clone();
+    let workspace_for_blocking = workspace.clone();
+    let turn = tauri::async_runtime::spawn_blocking(move || {
+        run_agent_turn(&app_for_blocking, &workspace_for_blocking, &node_id)
+    })
+    .await
+    .map_err(|error| format!("研究任务失败：{error}"))??;
+
+    let meta = serde_json::json!({ "toolTrace": turn.trace });
+    chat::append_message_with_meta(
+        &workspace,
+        &input.node_id,
+        "assistant",
+        &turn.content,
+        Some(meta),
+    )?;
+    let messages = chat::load_messages(&workspace, &input.node_id, 50)?;
+
+    Ok(ConversationReply {
+        messages,
+        model: turn.model,
+        usage: turn.usage,
+        tool_trace: turn.trace,
+    })
+}
+
+struct AgentTurn {
+    content: String,
+    model: String,
+    usage: Option<serde_json::Value>,
+    trace: Vec<ToolEvent>,
+}
+
+fn run_agent_turn(
+    app: &tauri::AppHandle,
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+) -> Result<AgentTurn, String> {
+    let context = chat::node_context(workspace, node_id)?;
+    let settings = settings::load_settings_for_app(app)?;
+    let resolved = settings::resolve_role(&settings, "research")?;
+    let saved_sources = stored_sources::linked_sources_for_chat(workspace, node_id, 20)?;
+    let linked_assets = asset_links::linked_excerpts(workspace, node_id, 4, 1_200)?;
+    let enabled_skills = skills::enabled_prompts(app, &settings).unwrap_or_default();
+
+    let mut tool_specs = builtin_tool_specs();
+    let mut mcp_map: std::collections::HashMap<String, McpTool> = std::collections::HashMap::new();
+    let mut mcp_note = String::new();
+    if !settings.mcp_servers.is_empty() {
+        let state = app.state::<AppState>();
+        let mut registry = state
+            .mcp
+            .lock()
+            .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+        match registry.tools(&settings.mcp_servers) {
+            Ok(tools) => {
+                for tool in tools {
+                    tool_specs.push(serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.qualified_name,
+                            "description": format!("[MCP:{}] {}", tool.server_name, tool.description),
+                            "parameters": tool.input_schema
+                        }
+                    }));
+                    mcp_map.insert(tool.qualified_name.clone(), tool);
+                }
+            }
+            Err(error) => mcp_note = error,
+        }
+    }
+
+    let system = system_prompt(
+        &context,
+        &saved_sources,
+        &linked_assets,
+        &enabled_skills,
+        &mcp_note,
+    );
     let mut messages = vec![serde_json::json!({
         "role": "system",
         "content": system
     })];
+    let history = chat::load_messages(workspace, node_id, 12)?;
     for item in &history {
         messages.push(serde_json::json!({
             "role": item.role,
@@ -1227,73 +1407,446 @@ pub async fn send_node_message(
         }));
     }
 
-    let model_id = resolved.model.model_id.clone();
-    let payload = serde_json::json!({
-        "provider": {
-            "baseUrl": resolved.provider.base_url.clone(),
-            "protocol": resolved.provider.protocol.clone(),
-            "proxy": resolved.provider.proxy.clone(),
-            "timeoutSeconds": resolved.provider.timeout_seconds
-        },
-        "modelId": model_id.clone(),
-        "messages": messages,
-        "apiKey": resolved.api_key.clone(),
-        "maxTokens": 2048,
-        "temperature": 0.4
-    });
+    let mut trace = Vec::new();
+    let mut final_content = String::new();
+    let mut model = resolved.model.model_id.clone();
+    let mut usage = None;
+    let max_steps = 8usize;
 
-    let app_for_blocking = app.clone();
-    let reply_text = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_for_blocking.state::<AppState>();
-        let mut manager = state
-            .sidecar
-            .lock()
-            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
-        manager.post_json("/chat", &payload)
-    })
-    .await
-    .map_err(|error| format!("模型请求任务失败：{error}"))??;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&reply_text).map_err(|error| format!("模型响应无法解析：{error}"))?;
-
-    if parsed.get("ok").and_then(|value| value.as_bool()) != Some(true) {
-        let message = parsed
-            .get("message")
+    for step in 0..max_steps {
+        let payload = serde_json::json!({
+            "provider": {
+                "baseUrl": resolved.provider.base_url,
+                "protocol": resolved.provider.protocol,
+                "proxy": resolved.provider.proxy,
+                "timeoutSeconds": resolved.provider.timeout_seconds
+            },
+            "modelId": resolved.model.model_id,
+            "messages": messages,
+            "apiKey": resolved.api_key,
+            "maxTokens": 8000,
+            "temperature": 0.3,
+            "tools": tool_specs
+        });
+        let parsed = sidecar_json(app, "/chat", &payload)?;
+        if parsed.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            let message = parsed
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("模型调用失败。");
+            return Err(message.to_string());
+        }
+        model = parsed
+            .get("model")
             .and_then(|value| value.as_str())
-            .unwrap_or("模型调用失败。");
-        return Err(message.to_string());
+            .map(str::to_string)
+            .unwrap_or_else(|| resolved.model.model_id.clone());
+        usage = parsed.get("usage").cloned().or(usage);
+
+        let content = parsed
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut calls = parsed
+            .get("toolCalls")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut assistant_content = content.clone();
+        if calls.is_empty() {
+            let mut fallback = parse_text_tool_calls(&content, step);
+            let mut stripped = if fallback.is_empty() {
+                content.clone()
+            } else {
+                strip_text_tool_calls(&content)
+            };
+            if fallback.is_empty() {
+                fallback = parse_dsml_tool_calls(&content, step);
+                if !fallback.is_empty() {
+                    stripped = strip_dsml_tool_calls(&content);
+                }
+            }
+            if !fallback.is_empty() {
+                calls = fallback;
+                assistant_content = stripped;
+            }
+        }
+
+        if calls.is_empty() {
+            final_content = content;
+            break;
+        }
+
+        let mut assistant_message = serde_json::json!({
+            "role": "assistant",
+            "content": assistant_content,
+            "tool_calls": calls
+        });
+        if let Some(reasoning) = parsed
+            .get("reasoningContent")
+            .and_then(|value| value.as_str())
+        {
+            assistant_message["reasoning_content"] =
+                serde_json::Value::String(reasoning.to_string());
+        }
+        messages.push(assistant_message);
+
+        for (index, call) in calls.iter().enumerate() {
+            let call_id = call
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("call_{step}_{index}"));
+            let name = call
+                .get("function")
+                .and_then(|value| value.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let arguments = match call
+                .get("function")
+                .and_then(|value| value.get("arguments"))
+            {
+                Some(serde_json::Value::String(text)) => {
+                    serde_json::from_str(text).unwrap_or_else(|_| serde_json::json!({}))
+                }
+                Some(value) => value.clone(),
+                None => serde_json::json!({}),
+            };
+
+            let started = std::time::Instant::now();
+            let executed = execute_tool(
+                app, workspace, node_id, &settings, &mcp_map, &name, &arguments,
+            );
+            let (result_text, summary, server, ok) = match executed {
+                Ok(value) => value,
+                Err(error) => (
+                    serde_json::json!({"ok": false, "error": error}).to_string(),
+                    format!("工具失败：{error}"),
+                    mcp_map
+                        .get(&name)
+                        .map(|tool| format!("MCP · {}", tool.server_name))
+                        .unwrap_or_else(|| "CERS".to_string()),
+                    false,
+                ),
+            };
+            trace.push(ToolEvent {
+                name: name.clone(),
+                server,
+                ok,
+                summary,
+                duration_ms: started.elapsed().as_millis(),
+            });
+            messages.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": result_text
+            }));
+        }
+
+        if step + 1 == max_steps {
+            final_content = content;
+        }
     }
 
-    let content = parsed
-        .get("content")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if content.is_empty() {
-        return Err("模型返回了空回复。".to_string());
+    if final_content.is_empty() {
+        return Err("模型调用了研究工具，但没有给出最终回答。请重试或缩小问题范围。".to_string());
     }
 
-    chat::append_message(&workspace, &input.node_id, "assistant", &content)?;
-    let messages = chat::load_messages(&workspace, &input.node_id, 50)?;
-    let model = parsed
-        .get("model")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .unwrap_or(model_id);
-
-    Ok(ConversationReply {
-        messages,
+    Ok(AgentTurn {
+        content: final_content,
         model,
-        usage: parsed.get("usage").cloned(),
+        usage,
+        trace,
     })
+}
+
+fn sidecar_json(
+    app: &tauri::AppHandle,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<AppState>();
+    let mut manager = state
+        .sidecar
+        .lock()
+        .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+    let reply = manager.post_json(path, payload)?;
+    serde_json::from_str(&reply).map_err(|error| format!("侧车响应无法解析：{error}"))
+}
+
+fn builtin_tool_specs() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cers_academic_search",
+                "description": "检索已启用的学术来源（OpenAlex、Crossref、arXiv 等），返回标题、作者、年份、DOI、摘要与覆盖级别；结果会自动收藏到当前节点。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词，可用空格分隔多组概念"},
+                        "yearFrom": {"type": "integer", "description": "起始年份，可选"},
+                        "yearTo": {"type": "integer", "description": "结束年份，可选"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cers_news_search",
+                "description": "检索已启用的新闻与 RSS 来源，返回近期资讯标题、原站链接、发布时间与摘要；结果会自动收藏到当前节点。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词；留空则读取已启用订阅的最新条目"}
+                    }
+                }
+            }
+        }),
+    ]
+}
+
+fn execute_tool(
+    app: &tauri::AppHandle,
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    settings: &settings::GlobalSettings,
+    mcp_map: &std::collections::HashMap<String, McpTool>,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<(String, String, String, bool), String> {
+    if name == "cers_academic_search" {
+        let query = arguments
+            .get("query")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if query.is_empty() {
+            return Err("学术检索需要 query。".to_string());
+        }
+        let year_from = arguments
+            .get("yearFrom")
+            .and_then(|value| value.as_i64())
+            .map(|value| value as i32);
+        let year_to = arguments
+            .get("yearTo")
+            .and_then(|value| value.as_i64())
+            .map(|value| value as i32);
+        let payload = serde_json::json!({
+            "query": query,
+            "maxResults": 6,
+            "yearFrom": year_from,
+            "yearTo": year_to,
+            "sources": settings::academic_sources_payload(settings),
+            "network": settings::network_payload(settings)
+        });
+        let result = sidecar_json(app, "/sources/search", &payload)?;
+        if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            return Err(result
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("学术检索失败。")
+                .to_string());
+        }
+        let records = result
+            .get("results")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let saved = save_records(workspace, node_id, &records);
+        let compact = compact_records(&records);
+        let text = serde_json::json!({
+            "ok": true,
+            "count": records.len(),
+            "saved": saved,
+            "results": compact
+        })
+        .to_string();
+        return Ok((
+            text,
+            format!("学术检索：{} 条，收藏 {} 条", records.len(), saved),
+            "CERS 学术来源".to_string(),
+            true,
+        ));
+    }
+
+    if name == "cers_news_search" {
+        let query = arguments
+            .get("query")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let payload = serde_json::json!({
+            "query": query,
+            "maxResults": 10,
+            "sources": settings::news_sources_payload(settings),
+            "network": settings::network_payload(settings)
+        });
+        let result = sidecar_json(app, "/news/search", &payload)?;
+        if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            return Err(result
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("资讯检索失败。")
+                .to_string());
+        }
+        let records = result
+            .get("results")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let saved = save_records(workspace, node_id, &records);
+        let compact = compact_records(&records);
+        let text = serde_json::json!({
+            "ok": true,
+            "count": records.len(),
+            "saved": saved,
+            "results": compact
+        })
+        .to_string();
+        return Ok((
+            text,
+            format!("资讯检索：{} 条，收藏 {} 条", records.len(), saved),
+            "CERS 新闻来源".to_string(),
+            true,
+        ));
+    }
+
+    let tool = mcp_map
+        .get(name)
+        .ok_or_else(|| format!("未知工具：{name}"))?;
+    let config = settings
+        .mcp_servers
+        .iter()
+        .find(|server| server.id == tool.server_id)
+        .ok_or_else(|| "MCP 服务配置已不存在。".to_string())?;
+    let state = app.state::<AppState>();
+    let mut registry = state
+        .mcp
+        .lock()
+        .map_err(|_| "MCP 状态不可用，请重启应用。".to_string())?;
+    let output = registry.call(config, &tool.name, arguments.clone())?;
+    let summary = output
+        .replace('\n', " ")
+        .chars()
+        .take(160)
+        .collect::<String>();
+    Ok((output, summary, format!("MCP · {}", tool.server_name), true))
+}
+
+fn save_records(workspace: &WorkspaceInfo, node_id: &str, records: &[serde_json::Value]) -> usize {
+    let mut saved = 0usize;
+    for record in records {
+        let input = SaveSourceInput {
+            provider: record
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .unwrap_or("cers")
+                .to_string(),
+            provider_name: record
+                .get("providerName")
+                .and_then(|value| value.as_str())
+                .unwrap_or("CERS")
+                .to_string(),
+            external_id: record
+                .get("externalId")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            doi: record
+                .get("doi")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            url: record
+                .get("url")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            title: record
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            authors: record
+                .get("authors")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            year: record.get("year").and_then(|value| value.as_i64()),
+            venue: record
+                .get("venue")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            abstract_text: record
+                .get("abstract")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            coverage: record
+                .get("coverage")
+                .and_then(|value| value.as_str())
+                .unwrap_or("metadata_only")
+                .to_string(),
+            record_type: record
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            retrieved_at: record
+                .get("retrievedAt")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            node_id: Some(node_id.to_string()),
+        };
+        if stored_sources::save_source(workspace, input).is_ok() {
+            saved += 1;
+        }
+    }
+    saved
+}
+
+fn compact_records(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    records
+        .iter()
+        .map(|record| {
+            let abstract_text = record
+                .get("abstract")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(400)
+                .collect::<String>();
+            serde_json::json!({
+                "title": record.get("title"),
+                "authors": record.get("authors"),
+                "year": record.get("year"),
+                "venue": record.get("venue"),
+                "doi": record.get("doi"),
+                "url": record.get("url"),
+                "coverage": record.get("coverage"),
+                "type": record.get("type"),
+                "publishedAt": record.get("publishedAt"),
+                "abstract": abstract_text
+            })
+        })
+        .collect()
 }
 
 fn system_prompt(
     context: &NodeChatContext,
     sources: &[SavedSource],
     linked_assets: &[(String, String)],
+    skills: &[(String, String)],
+    mcp_note: &str,
 ) -> String {
     let type_label = match context.node_type.as_str() {
         "root" => "总课题",
@@ -1315,9 +1868,19 @@ fn system_prompt(
          1. 不编造文献、DOI、作者、页码、实验结果或数据。\n\
          2. 没有证据时明确说明“尚未验证/证据不足”，不要把推断写成事实。\n\
          3. 回答简洁、可执行，优先给出下一步建议。\n\
-         4. 需要外部检索时说明将使用哪些来源；本轮不要伪造检索结果。\n\
-         5. 使用中文回答。",
+         4. 需要外部检索时调用工具，不要伪造检索结果或来源。\n\
+         5. 工具返回的来源会自动收藏；引用时写明来源与覆盖级别。\n\
+         6. 使用中文回答。",
         title = context.title,
+    );
+    prompt.push_str(&format!(
+        "\n当前日期：{}\n",
+        chrono::Local::now().format("%Y-%m-%d")
+    ));
+    prompt.push_str(
+        "\n工具使用：需要学术证据时调用 cers_academic_search；需要近期动态时调用 cers_news_search；\
+         需要核实监管文件或新闻原文时，调用名称以 mcp_ 开头的 MCP 工具读取原文。\
+         最多进行 8 轮工具调用，得到足够证据后给出结论。\n",
     );
 
     if !sources.is_empty() {
@@ -1367,7 +1930,162 @@ fn system_prompt(
         prompt.push_str("只能基于上述摘录陈述本地资料内容；需要更多内容时请让用户打开原文。\n");
     }
 
+    if !mcp_note.is_empty() {
+        prompt.push_str(&format!("\n注意：部分 MCP 服务不可用：{mcp_note}\n"));
+    }
+
+    if !skills.is_empty() {
+        prompt.push_str("\n本轮启用的技能（按其步骤执行，但仍须遵守证据规则）：\n");
+        for (name, body) in skills {
+            prompt.push_str(&format!("\n【{name}】\n{body}\n"));
+        }
+    }
+
     prompt
+}
+
+fn parse_dsml_tool_calls(content: &str, step: usize) -> Vec<serde_json::Value> {
+    let mut calls = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("invoke name=\"") {
+        let after = &rest[start + "invoke name=\"".len()..];
+        let Some(quote) = after.find('"') else {
+            break;
+        };
+        let name = &after[..quote];
+        let tail = &after[quote + 1..];
+        let block_end = tail.find("invoke name=\"").unwrap_or(tail.len());
+        let block = &tail[..block_end];
+        let mut arguments = serde_json::Map::new();
+        let mut parameters = block;
+        while let Some(position) = parameters.find("parameter name=\"") {
+            let after = &parameters[position + "parameter name=\"".len()..];
+            let Some(quote) = after.find('"') else {
+                break;
+            };
+            let key = &after[..quote];
+            let value_rest = &after[quote + 1..];
+            let Some(gt) = value_rest.find('>') else {
+                break;
+            };
+            let value_rest = &value_rest[gt + 1..];
+            let Some(close) = value_rest.find("</") else {
+                break;
+            };
+            let value = value_rest[..close].trim();
+            let numeric = matches!(key, "limit" | "maxChars" | "yearFrom" | "yearTo")
+                && value.parse::<i64>().is_ok();
+            if numeric {
+                arguments.insert(
+                    key.to_string(),
+                    serde_json::Value::Number(value.parse::<i64>().unwrap_or(0).into()),
+                );
+            } else {
+                arguments.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
+            }
+            parameters = &value_rest[close + 2..];
+        }
+        calls.push(serde_json::json!({
+            "id": format!("dsml_call_{step}_{}", calls.len()),
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": serde_json::Value::Object(arguments).to_string()
+            }
+        }));
+        rest = &tail[block_end..];
+    }
+    calls
+}
+
+fn strip_dsml_tool_calls(content: &str) -> String {
+    match content.find("<｜") {
+        Some(index) => content[..index].trim().to_string(),
+        None => content.trim().to_string(),
+    }
+}
+
+fn parse_text_tool_calls(content: &str, step: usize) -> Vec<serde_json::Value> {
+    let mut calls = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("<tool_call>") {
+        let body = &rest[start + "<tool_call>".len()..];
+        let Some(end) = body.find("</tool_call>") else {
+            break;
+        };
+        if let Some(value) = extract_json_object(body[..end].trim()) {
+            if let Some(call) = text_call_value(&value, step, calls.len()) {
+                calls.push(call);
+            }
+        }
+        rest = &body[end + "</tool_call>".len()..];
+    }
+    if calls.is_empty() {
+        let mut rest = content;
+        while let Some(start) = rest.find("```tool_call") {
+            let body = &rest[start + "```tool_call".len()..];
+            let body = body.trim_start_matches(['\n', '\r']);
+            let Some(end) = body.find("```") else {
+                break;
+            };
+            if let Some(value) = extract_json_object(body[..end].trim()) {
+                if let Some(call) = text_call_value(&value, step, calls.len()) {
+                    calls.push(call);
+                }
+            }
+            rest = &body[end + 3..];
+        }
+    }
+    calls
+}
+
+fn text_call_value(
+    value: &serde_json::Value,
+    step: usize,
+    index: usize,
+) -> Option<serde_json::Value> {
+    let name = value
+        .get("name")
+        .or_else(|| value.get("tool"))
+        .and_then(|item| item.as_str())?;
+    let arguments = value
+        .get("arguments")
+        .or_else(|| value.get("args"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let arguments = if arguments.is_string() {
+        arguments
+    } else {
+        serde_json::Value::String(arguments.to_string())
+    };
+    Some(serde_json::json!({
+        "id": format!("text_call_{step}_{index}"),
+        "type": "function",
+        "function": {"name": name, "arguments": arguments}
+    }))
+}
+
+fn strip_text_tool_calls(content: &str) -> String {
+    let mut output = content.to_string();
+    while let Some(start) = output.find("<tool_call>") {
+        let Some(relative_end) = output[start..].find("</tool_call>") else {
+            break;
+        };
+        let end = start + relative_end + "</tool_call>".len();
+        output.replace_range(start..end, "");
+    }
+    while let Some(start) = output.find("```tool_call") {
+        let body = &output[start + 12..];
+        let Some(relative_end) = body.find("```") else {
+            break;
+        };
+        let end = start + 12 + relative_end + 3;
+        output.replace_range(start..end, "");
+    }
+    output.trim().to_string()
 }
 
 fn extract_json_object(content: &str) -> Option<serde_json::Value> {
@@ -1414,9 +2132,443 @@ fn unavailable_sidecar(message: &str) -> SidecarStatus {
     }
 }
 
+pub(crate) fn run_demo_research(
+    app: &tauri::AppHandle,
+    workspace_path: &Path,
+    question: &str,
+) -> Result<serde_json::Value, String> {
+    let workspace = storage::open_workspace(workspace_path).map_err(|error| error.to_string())?;
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state
+            .workspace
+            .lock()
+            .map_err(|_| "应用状态不可用。".to_string())?;
+        *guard = Some(workspace.clone());
+    }
+    let _ = skills::skills_dir(app)?;
+
+    let snapshot = graph::load_graph(&workspace)?;
+    let research_title = "商业银行反欺诈模式研究";
+    let report_title = "研究报告：商业银行反欺诈模式";
+    let research_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.title == research_title)
+        .map(|node| node.id.clone());
+    let research_node_id = match research_node {
+        Some(id) => id,
+        None => {
+            let created = graph::create_node(
+                &workspace,
+                CreateNodeInput {
+                    node_type: "research".to_string(),
+                    title: research_title.to_string(),
+                    goal: Some(question.to_string()),
+                    x: 260.0,
+                    y: 140.0,
+                    parent_id: Some(workspace.root_node_id.clone()),
+                    edge_kind: Some("decomposition".to_string()),
+                },
+            )?;
+            created
+                .nodes
+                .iter()
+                .find(|node| node.title == research_title)
+                .map(|node| node.id.clone())
+                .ok_or_else(|| "研究节点创建失败。".to_string())?
+        }
+    };
+
+    let report_node_id = match snapshot
+        .nodes
+        .iter()
+        .find(|node| node.title == report_title)
+        .map(|node| node.id.clone())
+    {
+        Some(id) => id,
+        None => {
+            let created = graph::create_node(
+                &workspace,
+                CreateNodeInput {
+                    node_type: "report".to_string(),
+                    title: report_title.to_string(),
+                    goal: Some("汇总反欺诈模式研究的证据与趋势判断".to_string()),
+                    x: 520.0,
+                    y: 260.0,
+                    parent_id: Some(research_node_id.clone()),
+                    edge_kind: Some("association".to_string()),
+                },
+            )?;
+            created
+                .nodes
+                .iter()
+                .find(|node| node.title == report_title)
+                .map(|node| node.id.clone())
+                .ok_or_else(|| "报告节点创建失败。".to_string())?
+        }
+    };
+
+    let prompt = format!(
+        "请使用已启用技能，通过工具完成研究并输出一份可直接作为阶段报告的中文 Markdown。\n\
+         研究主题：{question}\n\n\
+         要求：\n\
+         1. 先用 cers_academic_search 检索至少两轮（中英文关键词各一组），再用 cers_news_search 获取近期动态；\n\
+         2. 对关键来源用 MCP 的 fetch_web_page 核验原文或摘要页；\n\
+         3. 明确区分监管文件、同行评议研究、行业报告、厂商观点与媒体报道；\n\
+         4. 正文中的每个事实性判断都要有来源链接或 DOI，并在参考文献列出；\n\
+         5. 输出结构：摘要、最新动态、主要反欺诈模式、发展趋势、证据表、风险与空白、参考文献；\n\
+         6. 不得编造数据、法规条款、市场份额或页码；证据不足处明确写“待核实”。"
+    );
+    chat::append_message(&workspace, &research_node_id, "user", &prompt)?;
+    let turn = run_agent_turn(app, &workspace, &research_node_id)?;
+
+    let sources = stored_sources::list_sources(&workspace, Some(&research_node_id), None)?;
+    let mut content = strip_model_references(&turn.content);
+    let (section, cited) = reference_section(&sources, &content);
+    if cited > 0 {
+        content.push_str("\n\n");
+        content.push_str(&section);
+    }
+
+    let report = reports::get_report(&workspace, &report_node_id)?;
+    let saved = reports::save_report(&workspace, &report_node_id, &content, report.revision)?;
+    let markdown_path = reports::export_markdown(&workspace, &report_node_id)?;
+    let docx_path = export_demo_document(app, &workspace, &report_node_id, "docx")?;
+    let pdf_path = export_demo_document(app, &workspace, &report_node_id, "pdf")?;
+
+    let baseline = run_direct_baseline(app, question)?;
+    let research_dir = Path::new(&workspace.workspace_path)
+        .join("Research Outputs")
+        .join("research");
+    std::fs::create_dir_all(&research_dir).map_err(|error| format!("创建目录失败：{error}"))?;
+    let baseline_path = research_dir.join("直连基线-反欺诈.md");
+    std::fs::write(&baseline_path, &baseline).map_err(|error| format!("写入基线失败：{error}"))?;
+
+    let metrics = serde_json::json!({
+        "question": question,
+        "reportNodeId": report_node_id,
+        "reportRevision": saved.revision,
+        "toolTrace": turn.trace,
+        "toolCalls": turn.trace.len(),
+        "sourcesSaved": sources.len(),
+        "sourcesCited": reference_section(&sources, &content).1,
+        "reportChars": content.chars().count(),
+        "reportLinks": count_links(&content),
+        "baselineChars": baseline.chars().count(),
+        "baselineLinks": count_links(&baseline),
+        "markdown": markdown_path,
+        "docx": docx_path,
+        "pdf": pdf_path,
+        "baseline": baseline_path.display().to_string(),
+    });
+    let metrics_path = research_dir.join("mcp-research-metrics.json");
+    std::fs::write(
+        &metrics_path,
+        serde_json::to_string_pretty(&metrics)
+            .map_err(|error| format!("序列化指标失败：{error}"))?,
+    )
+    .map_err(|error| format!("写入指标失败：{error}"))?;
+
+    Ok(metrics)
+}
+
+fn export_demo_document(
+    app: &tauri::AppHandle,
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    format: &str,
+) -> Result<String, String> {
+    let (content, title, path) = reports::export_target(workspace, node_id, format)?;
+    let payload = serde_json::json!({
+        "content": content,
+        "title": title,
+        "format": format,
+        "path": path,
+    });
+    let result = sidecar_json(app, "/reports/export", &payload)?;
+    if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(result
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("报告导出失败。")
+            .to_string());
+    }
+    if !Path::new(&path).is_file() {
+        return Err("导出的报告文件不存在。".to_string());
+    }
+    Ok(path)
+}
+
+fn reference_section(sources: &[SavedSource], content: &str) -> (String, usize) {
+    let cited: Vec<&SavedSource> = sources
+        .iter()
+        .filter(|source| source_cited(source, content))
+        .take(40)
+        .collect();
+    if cited.is_empty() {
+        return (String::new(), 0);
+    }
+    let mut output = String::from("## 参考文献\n\n");
+    for (index, source) in cited.iter().enumerate() {
+        let authors = if source.authors.is_empty() {
+            "佚名".to_string()
+        } else {
+            source.authors.join(", ")
+        };
+        let year = source
+            .year
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "年份未知".to_string());
+        let link = source
+            .doi
+            .as_deref()
+            .map(|doi| {
+                if doi.starts_with("http") {
+                    doi.to_string()
+                } else {
+                    format!("https://doi.org/{doi}")
+                }
+            })
+            .or_else(|| source.url.clone())
+            .unwrap_or_default();
+        let coverage = match source.coverage.as_str() {
+            "abstract_only" => "仅摘要",
+            "fulltext" => "已获全文",
+            "unavailable" => "不可获取",
+            _ => "仅题录",
+        };
+        output.push_str(&format!(
+            "{}. {}. {}，{}. {}. （{}）\n",
+            index + 1,
+            authors,
+            source.title,
+            year,
+            link,
+            coverage
+        ));
+    }
+    (output, cited.len())
+}
+
+fn strip_model_references(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if let Some(index) = lines.iter().rposition(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("##") && trimmed.contains("参考文献")
+    }) {
+        if index >= lines.len() / 2 {
+            return lines[..index]
+                .join(
+                    "
+",
+                )
+                .trim_end()
+                .to_string();
+        }
+    }
+    content.trim().to_string()
+}
+
+fn source_cited(source: &SavedSource, content: &str) -> bool {
+    let lowered = content.to_lowercase();
+    if let Some(doi) = source.doi.as_deref() {
+        if lowered.contains(&doi.to_lowercase()) {
+            return true;
+        }
+    }
+    if let Some(url) = source.url.as_deref() {
+        if content.contains(url) {
+            return true;
+        }
+    }
+    let title = source.title.trim();
+    if !title.is_empty() && content.contains(title) {
+        return true;
+    }
+    let prefix: String = title.chars().take(20).collect();
+    prefix.chars().count() >= 12 && content.contains(&prefix)
+}
+
+fn count_links(content: &str) -> usize {
+    content.matches("https://").count() + content.matches("http://").count()
+}
+
+fn run_direct_baseline(app: &tauri::AppHandle, question: &str) -> Result<String, String> {
+    let settings = settings::load_settings_for_app(app)?;
+    let resolved = settings::resolve_role(&settings, "research")?;
+    let payload = serde_json::json!({
+        "provider": {
+            "baseUrl": resolved.provider.base_url,
+            "protocol": resolved.provider.protocol,
+            "proxy": resolved.provider.proxy,
+            "timeoutSeconds": resolved.provider.timeout_seconds
+        },
+        "modelId": resolved.model.model_id,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是一名金融研究顾问。直接回答，不要使用外部工具或检索。"
+            },
+            {
+                "role": "user",
+                "content": format!("请完成一份关于“{question}”的研究报告，包含最新动态与趋势判断。")
+            }
+        ],
+        "apiKey": resolved.api_key,
+        "maxTokens": 6000,
+        "temperature": 0.3
+    });
+    let result = sidecar_json(app, "/chat", &payload)?;
+    if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(result
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("基线回答失败。")
+            .to_string());
+    }
+    Ok(result
+        .get("content")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_model_reference_tail_and_matches_citations() {
+        let mut content = String::from(
+            "## 一、摘要
+
+正文引用 [DOI](https://doi.org/10.1000/ABC)。
+
+",
+        );
+        content.push_str(
+            "## 七、参考文献
+
+1. 不完整的条目 https://doi.org/10.1000/",
+        );
+        let stripped = strip_model_references(&content);
+        assert!(!stripped.contains("七、参考文献"));
+        assert!(stripped.contains("正文引用"));
+
+        let source = SavedSource {
+            id: "src".to_string(),
+            external_id: None,
+            provider: "crossref".to_string(),
+            provider_name: "Crossref".to_string(),
+            doi: Some("10.1000/abc".to_string()),
+            url: None,
+            title: "Test".to_string(),
+            authors: vec![],
+            year: None,
+            venue: None,
+            abstract_text: None,
+            coverage: "metadata_only".to_string(),
+            record_type: None,
+            retrieved_at: None,
+            created_at: String::new(),
+        };
+        assert!(source_cited(&source, &stripped));
+    }
+
+    #[test]
+    fn parses_text_and_dsml_tool_calls() {
+        let dsml = "<｜｜DSML｜｜ calls>\n\
+                    <｜｜DSML｜｜ invoke name=\"cers_academic_search\">\n\
+                    <｜｜DSML｜｜ parameter name=\"query\" string=\"true\">商业银行 反欺诈</｜｜DSML｜｜ parameter>\n\
+                    <｜｜DSML｜｜ parameter name=\"yearFrom\" string=\"true\">2023</｜｜DSML｜｜ parameter>\n\
+                    </｜｜DSML｜｜ invoke>\n\
+                    <｜｜DSML｜｜ invoke name=\"cers_news_search\">\n\
+                    <｜｜DSML｜｜ parameter name=\"query\" string=\"true\">fraud</｜｜DSML｜｜ parameter>\n\
+                    </｜｜DSML｜｜ invoke>\n\
+                    </｜｜DSML｜｜ calls>";
+        let calls = parse_dsml_tool_calls(dsml, 0);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0]["function"]["name"].as_str(),
+            Some("cers_academic_search")
+        );
+        let arguments: serde_json::Value =
+            serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap_or("{}"))
+                .unwrap_or_default();
+        assert_eq!(arguments["query"].as_str(), Some("商业银行 反欺诈"));
+        assert_eq!(arguments["yearFrom"].as_i64(), Some(2023));
+        assert!(
+            strip_dsml_tool_calls(dsml).is_empty(),
+            "preamble should be empty"
+        );
+
+        let text = "先检索。\n<tool_call>{\"name\":\"cers_news_search\",\"arguments\":{\"query\":\"fraud\"}}</tool_call>";
+        let calls = parse_text_tool_calls(text, 0);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]["function"]["name"].as_str(),
+            Some("cers_news_search")
+        );
+        assert_eq!(strip_text_tool_calls(text), "先检索。");
+    }
+
+    /// 手动烟雾测试：需要本机已配置 research 角色模型，验证工具调用协议。
+    /// 运行 `cargo test real_tool_call_smoke -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_tool_call_smoke() {
+        let appdata =
+            std::path::PathBuf::from(std::env::var("APPDATA").expect("APPDATA available"));
+        let path = appdata.join("com.chengsi.academic").join("settings.json");
+        let settings: settings::GlobalSettings =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings"))
+                .expect("parse settings");
+        let resolved = settings::resolve_role(&settings, "research").expect("resolve model");
+
+        let payload = serde_json::json!({
+            "provider": {
+                "baseUrl": resolved.provider.base_url,
+                "protocol": resolved.provider.protocol,
+                "proxy": resolved.provider.proxy,
+                "timeoutSeconds": resolved.provider.timeout_seconds
+            },
+            "modelId": resolved.model.model_id,
+            "messages": [
+                {"role": "system", "content": "你必须先调用工具获取资料，再回答。"},
+                {"role": "user", "content": "请调用 cers_news_search 检索 fraud 的最新资讯，然后只回复工具名称。"}
+            ],
+            "apiKey": resolved.api_key,
+            "maxTokens": 800,
+            "temperature": 0.2,
+            "tools": builtin_tool_specs()
+        });
+
+        let mut manager = crate::sidecar::SidecarManager::default();
+        let reply = manager.post_json("/chat", &payload).expect("sidecar chat");
+        manager.shutdown();
+        let value: serde_json::Value = serde_json::from_str(&reply).expect("parse reply");
+        assert_eq!(
+            value.get("ok").and_then(|item| item.as_bool()),
+            Some(true),
+            "reply={reply}"
+        );
+        let calls = value
+            .get("toolCalls")
+            .and_then(|item| item.as_array())
+            .expect("toolCalls");
+        assert!(!calls.is_empty(), "reply={reply}");
+        let name = calls[0]
+            .get("function")
+            .and_then(|item| item.get("name"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        assert_eq!(name, "cers_news_search");
+        println!(
+            "toolCalls={}",
+            serde_json::to_string(&calls).unwrap_or_default()
+        );
+    }
 
     /// 手动烟雾测试：需要本机已配置 report 角色模型。
     /// 运行 `cargo test real_report_revision_smoke -- --ignored --nocapture`。

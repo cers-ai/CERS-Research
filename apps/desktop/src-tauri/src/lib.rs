@@ -1,18 +1,22 @@
 mod commands;
 mod domain;
+mod mcp;
 mod settings;
 mod sidecar;
+mod skills;
 mod storage;
 
 use std::sync::Mutex;
 
 use domain::WorkspaceInfo;
+use mcp::McpRegistry;
 use sidecar::SidecarManager;
 use tauri::Manager;
 
 pub struct AppState {
     pub workspace: Mutex<Option<WorkspaceInfo>>,
     pub sidecar: Mutex<SidecarManager>,
+    pub mcp: Mutex<McpRegistry>,
 }
 
 impl Default for AppState {
@@ -20,6 +24,7 @@ impl Default for AppState {
         Self {
             workspace: Mutex::new(None),
             sidecar: Mutex::new(SidecarManager::default()),
+            mcp: Mutex::new(McpRegistry::default()),
         }
     }
 }
@@ -49,6 +54,25 @@ pub fn run() {
                 }
             }
 
+            #[cfg(debug_assertions)]
+            if let (Ok(path), Ok(question)) = (
+                std::env::var("CERS_DEMO_WORKSPACE"),
+                std::env::var("CERS_DEMO_QUESTION"),
+            ) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    match commands::run_demo_research(
+                        &handle,
+                        std::path::Path::new(&path),
+                        &question,
+                    ) {
+                        Ok(metrics) => eprintln!("[CERS demo] {metrics}"),
+                        Err(error) => eprintln!("[CERS demo] failed: {error}"),
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -76,6 +100,12 @@ pub fn run() {
             commands::send_node_message,
             commands::search_academic_sources,
             commands::search_news,
+            commands::list_skills,
+            commands::set_skill_enabled,
+            commands::list_mcp_tools,
+            commands::test_mcp_server,
+            commands::call_mcp_tool,
+            commands::shutdown_mcp_server,
             commands::get_research_definition,
             commands::save_research_definition,
             commands::run_experiment,

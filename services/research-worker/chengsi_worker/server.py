@@ -205,6 +205,10 @@ def _chat(payload: dict[str, Any]) -> dict[str, Any]:
         "max_tokens": int(payload.get("maxTokens") or 2048),
         "temperature": float(payload.get("temperature") or 0.4),
     }
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        request_body["tools"] = tools
+        request_body["tool_choice"] = "auto"
 
     try:
         with httpx.Client(timeout=timeout, proxy=proxy) as client:
@@ -225,13 +229,30 @@ def _chat(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "message": "模型服务返回了非 JSON 响应。"}
 
     try:
-        content = data["choices"][0]["message"]["content"] or ""
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
-        return {"ok": False, "message": "模型响应缺少 choices[0].message.content。"}
+        return {"ok": False, "message": "模型响应缺少 choices[0].message。"}
 
+    tool_calls = message.get("tool_calls")
+    content = message.get("content") or ""
+    if not content and not isinstance(tool_calls, list):
+        return {"ok": False, "message": "模型响应既没有正文也没有工具调用。"}
+
+    finish_reason = None
+    try:
+        finish_reason = data["choices"][0].get("finishReason") or data["choices"][0].get(
+            "finish_reason"
+        )
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
     return {
         "ok": True,
         "content": str(content),
+        "toolCalls": tool_calls if isinstance(tool_calls, list) else [],
+        "reasoningContent": str(reasoning) if reasoning else None,
+        "finishReason": finish_reason,
         "model": str(data.get("model") or model_id),
         "usage": data.get("usage"),
     }

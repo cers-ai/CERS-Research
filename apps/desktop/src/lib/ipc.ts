@@ -167,6 +167,20 @@ export interface PrivacySettings {
   confirmBeforeEgress: boolean;
 }
 
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+  description: string;
+}
+
+export interface SkillSettings {
+  enabled: string[];
+}
+
 export interface GlobalSettings {
   providers: ProviderConfig[];
   sources: SourceConfig[];
@@ -174,6 +188,8 @@ export interface GlobalSettings {
   network: NetworkSettings;
   privacy: PrivacySettings;
   autonomy: string;
+  mcpServers: McpServerConfig[];
+  skills: SkillSettings;
 }
 
 export interface SettingsView {
@@ -190,10 +206,19 @@ export interface ConnectionTestResult {
   detail: string | null;
 }
 
+export interface ToolEvent {
+  name: string;
+  server: string;
+  ok: boolean;
+  summary: string;
+  durationMs: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   body: string;
+  meta?: { toolTrace?: ToolEvent[] } | null;
   createdAt: string;
 }
 
@@ -201,6 +226,37 @@ export interface ConversationReply {
   messages: ChatMessage[];
   model: string;
   usage: Record<string, unknown> | null;
+  toolTrace: ToolEvent[];
+}
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  source: string;
+  permissions: string[];
+  inputs: string;
+  outputs: string;
+  enabled: boolean;
+  chars: number;
+}
+
+export interface McpTool {
+  serverId: string;
+  serverName: string;
+  name: string;
+  qualifiedName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface McpServerStatus {
+  id: string;
+  name: string;
+  connected: boolean;
+  tools: McpTool[];
+  error: string | null;
 }
 
 export interface AcademicSourceStatus {
@@ -516,6 +572,41 @@ export async function getAssetText(
     assetId,
     limit: limit ?? null,
   });
+}
+
+export async function listSkills(): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("list_skills");
+}
+
+export async function setSkillEnabled(
+  skillId: string,
+  enabled: boolean,
+): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("set_skill_enabled", { skillId, enabled });
+}
+
+export async function listMcpTools(): Promise<McpTool[]> {
+  return invoke<McpTool[]>("list_mcp_tools");
+}
+
+export async function testMcpServer(serverId: string): Promise<McpServerStatus> {
+  return invoke<McpServerStatus>("test_mcp_server", { serverId });
+}
+
+export async function callMcpTool(
+  serverId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  return invoke<string>("call_mcp_tool", {
+    serverId,
+    toolName,
+    arguments: args,
+  });
+}
+
+export async function shutdownMcpServer(serverId: string): Promise<void> {
+  return invoke<void>("shutdown_mcp_server", { serverId });
 }
 
 export async function getGlobalSettings(): Promise<SettingsView> {

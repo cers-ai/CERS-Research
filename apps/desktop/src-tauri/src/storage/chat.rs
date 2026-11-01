@@ -10,6 +10,7 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String,
     pub body: String,
+    pub meta: Option<serde_json::Value>,
     pub created_at: String,
 }
 
@@ -50,7 +51,7 @@ pub fn load_messages(
     let limit = limit.clamp(1, 50) as i64;
     let mut statement = connection
         .prepare(
-            "SELECT id, role, body, created_at
+            "SELECT id, role, body, meta_json, created_at
              FROM conversation
              WHERE project_id = ?1 AND node_id = ?2
              ORDER BY created_at DESC, id DESC
@@ -64,7 +65,10 @@ pub fn load_messages(
                 id: row.get(0)?,
                 role: row.get(1)?,
                 body: row.get(2)?,
-                created_at: row.get(3)?,
+                meta: row
+                    .get::<_, Option<String>>(3)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                created_at: row.get(4)?,
             })
         })
         .map_err(|error| format!("读取对话失败：{error}"))?;
@@ -82,6 +86,16 @@ pub fn append_message(
     role: &str,
     body: &str,
 ) -> Result<ChatMessage, String> {
+    append_message_with_meta(workspace, node_id, role, body, None)
+}
+
+pub fn append_message_with_meta(
+    workspace: &WorkspaceInfo,
+    node_id: &str,
+    role: &str,
+    body: &str,
+    meta: Option<serde_json::Value>,
+) -> Result<ChatMessage, String> {
     if !matches!(role, "user" | "assistant" | "system") {
         return Err("对话角色无效。".to_string());
     }
@@ -95,19 +109,26 @@ pub fn append_message(
         id: new_id("msg"),
         role: role.to_string(),
         body: text.to_string(),
+        meta: meta.clone(),
         created_at: now_iso(),
     };
+    let meta_json = meta
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| format!("序列化对话元数据失败：{error}"))?;
 
     connection
         .execute(
-            "INSERT INTO conversation (id, project_id, node_id, role, body, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO conversation (id, project_id, node_id, role, body, meta_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 message.id,
                 workspace.project_id,
                 node_id,
                 message.role,
                 message.body,
+                meta_json,
                 message.created_at
             ],
         )

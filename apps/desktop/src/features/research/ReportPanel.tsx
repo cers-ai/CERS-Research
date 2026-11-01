@@ -46,6 +46,8 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [sources, setSources] = useState<SavedSource[]>([]);
   const [citeLoading, setCiteLoading] = useState(false);
   const [citeError, setCiteError] = useState<string | null>(null);
+  const [citationScope, setCitationScope] = useState<"node" | "project">("node");
+  const [citeQuery, setCiteQuery] = useState("");
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outline, setOutline] = useState<ReportOutline | null>(null);
@@ -160,17 +162,23 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
     }
   };
 
-  const openCitations = async () => {
-    setCiteOpen(true);
+  const loadCitations = async (scope: "node" | "project") => {
+    setCitationScope(scope);
     setCiteError(null);
     setCiteLoading(true);
     try {
-      setSources(await listSavedSources(nodeId));
+      setSources(scope === "node" ? await listSavedSources(nodeId) : await listSavedSources());
     } catch (cause) {
       setCiteError(toMessage(cause));
     } finally {
       setCiteLoading(false);
     }
+  };
+
+  const openCitations = async () => {
+    setCiteOpen(true);
+    setCiteQuery("");
+    await loadCitations("node");
   };
 
   const insertAtCursor = (text: string) => {
@@ -540,16 +548,53 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
             </>
           }
         >
+          <div className="lit-modes">
+            <button
+              type="button"
+              className={`choice ${citationScope === "node" ? "choice--active" : ""}`}
+              onClick={() => void loadCitations("node")}
+            >
+              本节点收藏
+            </button>
+            <button
+              type="button"
+              className={`choice ${citationScope === "project" ? "choice--active" : ""}`}
+              onClick={() => void loadCitations("project")}
+            >
+              项目全部来源
+            </button>
+            <input
+              className="citation-search"
+              value={citeQuery}
+              placeholder="按标题、期刊或 DOI 筛选"
+              aria-label="筛选引用来源"
+              onChange={(event) => setCiteQuery(event.target.value)}
+            />
+          </div>
+
           {citeError && <div className="canvas-error">{citeError}</div>}
           {citeLoading ? (
             <p className="muted">正在读取已收藏来源…</p>
           ) : sources.length === 0 ? (
             <p className="hint">
-              当前节点还没有收藏来源。先在下方“文献检索”中检索并收藏，再回到这里插入引用。
+              {citationScope === "node"
+                ? "当前节点还没有收藏来源。先在下方“文献检索”中检索并收藏，或切换到“项目全部来源”。"
+                : "项目还没有收藏来源。"}
             </p>
           ) : (
             <div className="citation-list">
-              {sources.map((source) => (
+              {sources
+                .filter((source) => {
+                  const needle = citeQuery.trim().toLowerCase();
+                  if (!needle) {
+                    return true;
+                  }
+                  return [source.title, source.venue ?? "", source.doi ?? ""]
+                    .join(" ")
+                    .toLowerCase()
+                    .includes(needle);
+                })
+                .map((source) => (
                 <div className="citation-row" key={source.id}>
                   <div className="citation-body">
                     <strong>{source.title}</strong>

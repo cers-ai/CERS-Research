@@ -2813,3 +2813,60 @@ code,
   height: 15px;
   accent-color: var(--color-primary);
 }
+
+/* ---------- experiment regression ---------- */
+
+.exp-regression {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+}
+
+.exp-regression-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.exp-predictor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: var(--text-xs);
+}
+
+.exp-predictor {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--color-text-secondary);
+}
+
+.exp-predictor input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-primary);
+}
+
+.exp-regression-result {
+  margin-top: 10px;
+}
+
+.citation-search {
+  flex: 1;
+  min-width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+}
+
+.lit-modes .citation-search {
+  margin-left: auto;
+}

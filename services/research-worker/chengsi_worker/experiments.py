@@ -97,6 +97,22 @@ def run_experiment(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
     correlations = _correlations(numeric_values)
+    target = str(payload.get("target") or "").strip()
+    predictors = payload.get("predictors")
+    if not isinstance(predictors, list):
+        predictors = []
+    predictors = [str(item).strip() for item in predictors if str(item).strip()]
+    regression = None
+    groups: list[dict[str, Any]] = []
+    if target and predictors:
+        regression = _regression(
+            headers,
+            data_rows,
+            numeric_values,
+            target,
+            predictors,
+        )
+        groups = _groups(headers, data_rows, numeric_values, target)
 
     return {
         "ok": True,
@@ -110,6 +126,8 @@ def run_experiment(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "columns": columns,
         "correlations": correlations,
+        "regression": regression,
+        "groups": groups,
         "preview": {
             "headers": headers,
             "rows": [row[: len(headers)] for row in data_rows[:MAX_PREVIEW_ROWS]],
@@ -153,3 +171,210 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     if denominator_x == 0 or denominator_y == 0:
         return None
     return numerator / (denominator_x * denominator_y)
+
+
+def _regression(
+    headers: list[str],
+    data_rows: list[list[str]],
+    numeric_values: dict[str, list[float]],
+    target: str,
+    predictors: list[str],
+) -> dict[str, Any]:
+    if target not in numeric_values:
+        return {"ok": False, "message": f"因变量不是数值列：{target}"}
+    predictors = [name for name in predictors if name in numeric_values and name != target]
+    if not predictors:
+        return {"ok": False, "message": "至少选择一个与因变量不同的数值自变量。"}
+    if len(set(predictors)) != len(predictors):
+        return {"ok": False, "message": "自变量重复。"}
+
+    index = {name: position for position, name in enumerate(headers)}
+    samples: list[tuple[float, list[float]]] = []
+    for row in data_rows:
+        try:
+            y = float(row[index[target]].strip())
+            xs = [float(row[index[name]].strip()) for name in predictors]
+        except (KeyError, IndexError, ValueError):
+            continue
+        samples.append((y, xs))
+    n = len(samples)
+    k = len(predictors)
+    if n < k + 2:
+        return {
+            "ok": False,
+            "message": f"完整样本仅 {n} 条，不足以估计 {k} 个自变量。",
+        }
+
+    ys = [item[0] for item in samples]
+    xs_by_column = [[item[1][j] for item in samples] for j in range(k)]
+    mean_y = statistics.fmean(ys)
+    sd_y = statistics.pstdev(ys) or 1.0
+    means = [statistics.fmean(column) for column in xs_by_column]
+    sds = [statistics.pstdev(column) or 1.0 for column in xs_by_column]
+
+    z_y = [(value - mean_y) / sd_y for value in ys]
+    z_x = [
+        [(value - means[j]) / sds[j] for value in xs_by_column[j]]
+        for j in range(k)
+    ]
+
+    matrix = [[_dot(z_x[i], z_x[j]) for j in range(k)] for i in range(k)]
+    vector = [_dot(z_x[i], z_y) for i in range(k)]
+    beta = _solve(matrix, vector)
+    if beta is None:
+        return {"ok": False, "message": "自变量矩阵奇异，可能存在完全共线。"}
+
+    fitted = [sum(beta[j] * z_x[j][row] for j in range(k)) for row in range(n)]
+    residuals = [z_y[row] - fitted[row] for row in range(n)]
+    sse = sum(value * value for value in residuals)
+    sst = sum(value * value for value in z_y)
+    r2 = 1.0 - sse / sst if sst else 0.0
+    adjusted = 1.0 - (1.0 - r2) * (n - 1) / (n - k - 1)
+    sigma2 = sse / (n - k - 1)
+    inverse = _invert(matrix)
+    if inverse is None:
+        return {"ok": False, "message": "无法计算回归标准误。"}
+
+    vifs = []
+    for i in range(k):
+        others = [j for j in range(k) if j != i]
+        if not others:
+            vifs.append(1.0)
+            continue
+        other_matrix = [[_dot(z_x[j], z_x[m]) for m in others] for j in others]
+        other_vector = [_dot(z_x[j], z_x[i]) for j in others]
+        other_beta = _solve(other_matrix, other_vector)
+        if other_beta is None:
+            vifs.append(float("inf"))
+            continue
+        other_fitted = [
+            sum(other_beta[pos] * z_x[j][row] for pos, j in enumerate(others))
+            for row in range(n)
+        ]
+        other_sse = sum((z_x[i][row] - other_fitted[row]) ** 2 for row in range(n))
+        vif = 1.0 / (other_sse / n) if other_sse else float("inf")
+        vifs.append(vif)
+
+    intercept = mean_y
+    coefficients = []
+    for j, name in enumerate(predictors):
+        standard_error = math.sqrt(max(0.0, sigma2 * inverse[j][j]))
+        t_value = beta[j] / standard_error if standard_error else None
+        original = beta[j] * sd_y / sds[j]
+        intercept -= original * means[j]
+        coefficients.append(
+            {
+                "name": name,
+                "beta": original,
+                "stdBeta": beta[j],
+                "stdError": standard_error,
+                "t": t_value,
+                "vif": None if math.isinf(vifs[j]) else vifs[j],
+            }
+        )
+
+    return {
+        "ok": True,
+        "target": target,
+        "predictors": predictors,
+        "n": n,
+        "r2": r2,
+        "adjustedR2": adjusted,
+        "intercept": intercept,
+        "coefficients": coefficients,
+        "note": "标准化 beta 用于比较独立解释力；VIF 大于 5 表示共线性较强。",
+    }
+
+
+def _dot(left: list[float], right: list[float]) -> float:
+    return sum(a * b for a, b in zip(left, right, strict=False))
+
+
+def _solve(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    size = len(vector)
+    work = [row[:] + [vector[index]] for index, row in enumerate(matrix)]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(work[row][column]))
+        if abs(work[pivot][column]) < 1e-12:
+            return None
+        work[column], work[pivot] = work[pivot], work[column]
+        divisor = work[column][column]
+        for cell in range(column, size + 1):
+            work[column][cell] /= divisor
+        for row in range(size):
+            if row == column:
+                continue
+            factor = work[row][column]
+            if factor == 0:
+                continue
+            for cell in range(column, size + 1):
+                work[row][cell] -= factor * work[column][cell]
+    return [work[row][size] for row in range(size)]
+
+
+def _invert(matrix: list[list[float]]) -> list[list[float]] | None:
+    size = len(matrix)
+    work = [
+        row[:] + [1.0 if row_index == column else 0.0 for column in range(size)]
+        for row_index, row in enumerate(matrix)
+    ]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(work[row][column]))
+        if abs(work[pivot][column]) < 1e-12:
+            return None
+        work[column], work[pivot] = work[pivot], work[column]
+        divisor = work[column][column]
+        for cell in range(2 * size):
+            work[column][cell] /= divisor
+        for row in range(size):
+            if row == column:
+                continue
+            factor = work[row][column]
+            if factor == 0:
+                continue
+            for cell in range(2 * size):
+                work[row][cell] -= factor * work[column][cell]
+    return [row[size:] for row in work]
+
+
+def _groups(
+    headers: list[str],
+    data_rows: list[list[str]],
+    numeric_values: dict[str, list[float]],
+    target: str,
+) -> list[dict[str, Any]]:
+    if target not in numeric_values:
+        return []
+    target_index = headers.index(target)
+    summaries: list[dict[str, Any]] = []
+    for index, name in enumerate(headers):
+        if name in numeric_values:
+            continue
+        buckets: dict[str, list[float]] = {}
+        for row in data_rows:
+            if index >= len(row) or target_index >= len(row):
+                continue
+            label = row[index].strip()
+            if not label:
+                continue
+            try:
+                value = float(row[target_index].strip())
+            except ValueError:
+                continue
+            buckets.setdefault(label, []).append(value)
+        if len(buckets) < 2 or len(buckets) > 20:
+            continue
+        groups = [
+            {
+                "name": label,
+                "n": len(values),
+                "mean": statistics.fmean(values),
+                "std": statistics.pstdev(values) if len(values) > 1 else 0.0,
+            }
+            for label, values in buckets.items()
+        ]
+        groups.sort(key=lambda item: item["name"])
+        summaries.append({"column": name, "target": target, "groups": groups})
+        if len(summaries) >= 3:
+            break
+    return summaries

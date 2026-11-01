@@ -397,6 +397,8 @@ pub async fn run_experiment(
     node_id: String,
     asset_id: String,
     goal: String,
+    target: Option<String>,
+    predictors: Option<Vec<String>>,
 ) -> Result<ExperimentRun, String> {
     let workspace = workspace_for_app(&app)?;
     experiments::ensure_experiment_node(&workspace, &node_id)?;
@@ -430,6 +432,8 @@ pub async fn run_experiment(
     let payload = serde_json::json!({
         "path": candidate.display().to_string(),
         "goal": goal,
+        "target": target,
+        "predictors": predictors,
     });
 
     let app_for_blocking = app.clone();

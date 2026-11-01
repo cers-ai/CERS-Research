@@ -371,6 +371,39 @@ export interface ExperimentCorrelation {
   n: number;
 }
 
+export interface ExperimentCoefficient {
+  name: string;
+  beta: number;
+  stdBeta: number;
+  stdError: number;
+  t: number | null;
+  vif: number | null;
+}
+
+export interface ExperimentRegression {
+  ok: boolean;
+  message?: string;
+  target?: string;
+  predictors?: string[];
+  n?: number;
+  r2?: number;
+  adjustedR2?: number;
+  intercept?: number;
+  coefficients?: ExperimentCoefficient[];
+  note?: string;
+}
+
+export interface ExperimentGroupSummary {
+  column: string;
+  target: string;
+  groups: Array<{
+    name: string;
+    n: number;
+    mean: number;
+    std: number;
+  }>;
+}
+
 export interface ExperimentOutput {
   ok: boolean;
   goal?: string;
@@ -384,6 +417,8 @@ export interface ExperimentOutput {
   };
   columns?: ExperimentColumnStats[];
   correlations?: ExperimentCorrelation[];
+  regression?: ExperimentRegression | null;
+  groups?: ExperimentGroupSummary[];
   preview?: {
     headers: string[];
     rows: string[][];
@@ -807,8 +842,16 @@ export async function runExperiment(
   nodeId: string,
   assetId: string,
   goal: string,
+  target?: string,
+  predictors?: string[],
 ): Promise<ExperimentRun> {
-  return invoke<ExperimentRun>("run_experiment", { nodeId, assetId, goal });
+  return invoke<ExperimentRun>("run_experiment", {
+    nodeId,
+    assetId,
+    goal,
+    target: target ?? null,
+    predictors: predictors ?? null,
+  });
 }
 
 export async function listExperimentRuns(

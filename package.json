@@ -18,6 +18,8 @@
     "build:web": "npm --workspace @cers/desktop run build",
     "build:sidecar": "uv run --directory services/research-worker pyinstaller --noconfirm --clean --onefile --name chengsi-worker --distpath dist --workpath build/pyinstaller --specpath build launcher.py",
     "bundle:win": "npm run build:sidecar && cd apps/desktop && npx tauri build --bundles nsis",
-    "build:mcp": "uv run --directory services/mcp-research pyinstaller --noconfirm --clean --onefile --name cers-mcp-research --distpath dist --workpath build/pyinstaller --specpath build launcher.py"
+    "build:mcp": "uv run --directory services/mcp-research pyinstaller --noconfirm --clean --onefile --name cers-mcp-research --distpath dist --workpath build/pyinstaller --specpath build launcher.py",
+    "sign:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/src-tauri/scripts/sign-windows.ps1 -Path services/research-worker/dist/chengsi-worker.exe",
+    "bundle:win:signed": "npm run build:sidecar && npm run sign:sidecar && cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.signing.conf.json"
   }
 }

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 REQUIRED_PYTHON = (3, 13)
 

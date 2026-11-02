@@ -251,6 +251,25 @@ export function ChatPanel({
             ) : (
               <p className="node-chat-user-text">{message.body}</p>
             )}
+            {message.role === "assistant" &&
+              message.meta?.suggestions &&
+              message.meta.suggestions.length > 0 && (
+                <div className="quick-actions message-actions">
+                  {message.meta.suggestions.map((action) => (
+                    <button
+                      key={`${message.id}-${action.title}`}
+                      type="button"
+                      className="quick-action-card"
+                      disabled={sending}
+                      onClick={() => void send(action.prompt, action.deep)}
+                    >
+                      <strong>{action.title}</strong>
+                      <span>{action.description}</span>
+                      {action.deep && <span className="tag tag--muted">深度研究</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
           </div>
         ))}
         {sending && (liveReasoning || liveContent) && (

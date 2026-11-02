@@ -30,6 +30,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[chengsi-worker] {exc}", file=sys.stderr)
         return 78  # EX_CONFIG
 
+    if "--mcp-serve" in args:
+        from .mcp_server import serve_mcp
+
+        return serve_mcp()
+
     if "--serve" in args:
         # 优先使用环境变量，避免会话令牌出现在进程命令行中。
         token = os.environ.get("CERS_SIDECAR_TOKEN") or _option(args, "--token")

@@ -243,11 +243,21 @@ export interface ToolEvent {
   durationMs: number;
 }
 
+export interface ChatSuggestion {
+  title: string;
+  description: string;
+  prompt: string;
+  deep: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   body: string;
-  meta?: { toolTrace?: ToolEvent[] } | null;
+  meta?: {
+    toolTrace?: ToolEvent[];
+    suggestions?: ChatSuggestion[];
+  } | null;
   createdAt: string;
 }
 
@@ -256,6 +266,7 @@ export interface ConversationReply {
   model: string;
   usage: Record<string, unknown> | null;
   toolTrace: ToolEvent[];
+  suggestions: ChatSuggestion[];
 }
 
 export interface SkillInfo {

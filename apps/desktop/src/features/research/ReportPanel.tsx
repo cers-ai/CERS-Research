@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Modal } from "../../components/Modal";
+import { TaskStreamView } from "../../components/TaskStreamView";
+import { useTaskStream } from "../../lib/useTaskStream";
 import {
   applyReportChanges,
   exportReportDocument,
@@ -55,6 +57,12 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
   const [pending, setPending] = useState<ReportChangeProposal | null>(null);
   const [mode, setMode] = useState<"edit" | "preview">("edit");
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const outlineStream = useTaskStream(
+    outlineOpen && outlineLoading ? `outline:${nodeId}` : null,
+  );
+  const changeStream = useTaskStream(
+    aiOpen && aiLoading ? `changes:${nodeId}` : null,
+  );
 
   const loadRevisions = useCallback(async () => {
     try {
@@ -502,7 +510,12 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
         >
           {outlineError && <div className="canvas-error">{outlineError}</div>}
           {outlineLoading ? (
-            <p className="muted">正在生成提纲…</p>
+            <TaskStreamView
+              reasoning={outlineStream.reasoning}
+              content={outlineStream.content}
+              active={outlineStream.active}
+              label="正在生成提纲…"
+            />
           ) : outline ? (
             <>
               <h3 className="node-workspace-section">{outline.title}</h3>
@@ -664,6 +677,14 @@ export function ReportPanel({ nodeId, title }: ReportPanelProps) {
           }
         >
           {aiError && <div className="canvas-error">{aiError}</div>}
+          {aiLoading && (
+            <TaskStreamView
+              reasoning={changeStream.reasoning}
+              content={changeStream.content}
+              active={changeStream.active}
+              label="正在生成逐项修改建议…"
+            />
+          )}
 
           {!proposal ? (
             <label className="form-field">

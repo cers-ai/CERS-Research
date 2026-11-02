@@ -23,6 +23,8 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { Modal } from "../../components/Modal";
+import { TaskStreamView } from "../../components/TaskStreamView";
+import { useTaskStream } from "../../lib/useTaskStream";
 import {
   confirmProposal,
   createEdge,
@@ -102,6 +104,7 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
   const [proposal, setProposal] = useState<ProposalView | null>(null);
   const [proposalDraft, setProposalDraft] = useState<ProposalDraft[]>([]);
   const [proposing, setProposing] = useState(false);
+  const [decompositionTaskId, setDecompositionTaskId] = useState<string | null>(null);
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [confirmingProposal, setConfirmingProposal] = useState(false);
 
@@ -358,6 +361,10 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
     }
   }, [undoAction, workspaceNode, applySnapshot]);
 
+  const decompositionStream = useTaskStream(
+    proposing ? decompositionTaskId : null,
+  );
+
   const startDecomposition = useCallback(async () => {
     const anchor =
       selectedId ?? snapshot?.nodes.find((node) => node.type === "root")?.id;
@@ -367,6 +374,7 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
     }
 
     setProposing(true);
+    setDecompositionTaskId(`decomposition:${anchor}`);
     setProposalError(null);
     try {
       const view = await proposeDecomposition(anchor);
@@ -873,6 +881,26 @@ export function CanvasPage({ workspace, onOpenFolder }: CanvasPageProps) {
           }
         >
           <p className="muted">删除关系不会影响两个节点本身及其研究内容。</p>
+        </Modal>
+      )}
+
+      {proposing && decompositionTaskId && (
+        <Modal
+          title="智能分解 · 正在生成"
+          description="正在读取研究定义并生成候选节点；确认前不会写入科研图。"
+          onClose={() => undefined}
+          footer={
+            <button type="button" className="btn" disabled>
+              生成中…
+            </button>
+          }
+        >
+          <TaskStreamView
+            reasoning={decompositionStream.reasoning}
+            content={decompositionStream.content}
+            active={decompositionStream.active}
+            label="正在分析研究结构…"
+          />
         </Modal>
       )}
 

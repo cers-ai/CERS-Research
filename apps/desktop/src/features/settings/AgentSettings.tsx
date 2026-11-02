@@ -165,11 +165,11 @@ export function AgentSettings({ settings, onPersist }: AgentSettingsProps) {
                   <span>启动命令</span>
                   <input
                     value={
-                      server.command === "__cers_bundled_mcp__"
+                      server.command.startsWith("__cers_bundled")
                         ? "内置服务（随安装包提供）"
                         : server.command
                     }
-                    disabled={server.command === "__cers_bundled_mcp__"}
+                    disabled={server.command.startsWith("__cers_bundled")}
                     placeholder="uv / npx / python"
                     onChange={(event) => update(index, { command: event.target.value })}
                   />

@@ -63,6 +63,16 @@ pub struct ConversationReply {
     pub model: String,
     pub usage: Option<serde_json::Value>,
     pub tool_trace: Vec<ToolEvent>,
+    pub suggestions: Vec<ChatSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSuggestion {
+    pub title: String,
+    pub description: String,
+    pub prompt: String,
+    pub deep: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -619,20 +629,13 @@ pub async fn propose_decomposition(
         "temperature": 0.3
     });
 
+    let task_id = format!("decomposition:{node_id}");
     let app_for_blocking = app.clone();
-    let reply = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_for_blocking.state::<AppState>();
-        let mut manager = state
-            .sidecar
-            .lock()
-            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
-        manager.post_json("/chat", &payload)
+    let parsed = tauri::async_runtime::spawn_blocking(move || {
+        sidecar_task_stream(&app_for_blocking, &task_id, &payload)
     })
     .await
     .map_err(|error| format!("智能分解任务失败：{error}"))??;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
     if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
         let message = parsed
             .get("message")
@@ -906,20 +909,13 @@ pub async fn suggest_report_outline(
         "temperature": 0.2
     });
 
+    let task_id = format!("outline:{node_id}");
     let app_for_blocking = app.clone();
-    let reply = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_for_blocking.state::<AppState>();
-        let mut manager = state
-            .sidecar
-            .lock()
-            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
-        manager.post_json("/chat", &payload)
+    let parsed = tauri::async_runtime::spawn_blocking(move || {
+        sidecar_task_stream(&app_for_blocking, &task_id, &payload)
     })
     .await
     .map_err(|error| format!("提纲任务失败：{error}"))??;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
     if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
         let message = parsed
             .get("message")
@@ -1026,20 +1022,13 @@ pub async fn suggest_report_changes(
         "temperature": 0.2
     });
 
+    let task_id = format!("changes:{node_id}");
     let app_for_blocking = app.clone();
-    let reply = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_for_blocking.state::<AppState>();
-        let mut manager = state
-            .sidecar
-            .lock()
-            .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
-        manager.post_json("/chat", &payload)
+    let parsed = tauri::async_runtime::spawn_blocking(move || {
+        sidecar_task_stream(&app_for_blocking, &task_id, &payload)
     })
     .await
     .map_err(|error| format!("报告修订任务失败：{error}"))??;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&reply).map_err(|error| format!("模型响应无法解析：{error}"))?;
     if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
         let message = parsed
             .get("message")
@@ -1474,7 +1463,10 @@ pub async fn send_node_message(
     .await
     .map_err(|error| format!("研究任务失败：{error}"))??;
 
-    let meta = serde_json::json!({ "toolTrace": turn.trace });
+    let meta = serde_json::json!({
+        "toolTrace": turn.trace,
+        "suggestions": turn.suggestions
+    });
     chat::append_message_with_meta(
         &workspace,
         &input.node_id,
@@ -1489,6 +1481,7 @@ pub async fn send_node_message(
         model: turn.model,
         usage: turn.usage,
         tool_trace: turn.trace,
+        suggestions: turn.suggestions,
     })
 }
 
@@ -1497,6 +1490,7 @@ struct AgentTurn {
     model: String,
     usage: Option<serde_json::Value>,
     trace: Vec<ToolEvent>,
+    suggestions: Vec<ChatSuggestion>,
 }
 
 fn run_agent_turn(
@@ -1748,6 +1742,12 @@ fn run_agent_turn(
         serde_json::json!({"nodeId": node_id, "phase": "done"}),
     );
 
+    let (clean_content, mut suggestions) = extract_suggestions(&final_content);
+    final_content = clean_content;
+    if suggestions.is_empty() {
+        suggestions = default_suggestions(&context);
+    }
+
     if final_content.is_empty() {
         return Err("模型调用了研究工具，但没有给出最终回答。请重试或缩小问题范围。".to_string());
     }
@@ -1757,7 +1757,70 @@ fn run_agent_turn(
         model,
         usage,
         trace,
+        suggestions,
     })
+}
+
+fn sidecar_task_stream(
+    app: &tauri::AppHandle,
+    task_id: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let _ = app.emit("task-stream-start", serde_json::json!({"taskId": task_id}));
+    let state = app.state::<AppState>();
+    let mut manager = state
+        .sidecar
+        .lock()
+        .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+    let mut done: Option<serde_json::Value> = None;
+    let mut error: Option<String> = None;
+    manager.post_json_stream("/chat/stream", payload, |line| {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        match value.get("type").and_then(|item| item.as_str()) {
+            Some("delta") => {
+                let kind = value
+                    .get("kind")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("content");
+                let text = value
+                    .get("text")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("");
+                if !text.is_empty() {
+                    let _ = app.emit(
+                        "task-delta",
+                        serde_json::json!({
+                            "taskId": task_id,
+                            "kind": kind,
+                            "text": text
+                        }),
+                    );
+                }
+            }
+            Some("done") => done = Some(value),
+            Some("error") => {
+                error = Some(
+                    value
+                        .get("message")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("模型流式调用失败。")
+                        .to_string(),
+                )
+            }
+            _ => {}
+        }
+    })?;
+    let _ = app.emit("task-stream-end", serde_json::json!({"taskId": task_id}));
+    if let Some(message) = error {
+        return Err(message);
+    }
+    let Some(mut value) = done else {
+        return Err("模型流式响应不完整。".to_string());
+    };
+    value["ok"] = serde_json::Value::Bool(true);
+    Ok(value)
 }
 
 fn sidecar_chat_stream(
@@ -2376,6 +2439,102 @@ fn strip_dsml_tool_calls(content: &str) -> String {
     }
 }
 
+fn default_suggestions(context: &NodeChatContext) -> Vec<ChatSuggestion> {
+    if context.node_type == "report" {
+        return vec![
+            ChatSuggestion {
+                title: "检查引用完整性".to_string(),
+                description: "核对正文引用与参考文献是否一一对应。".to_string(),
+                prompt: "请检查这份报告的正文引用与参考文献是否一一对应，指出缺失、重复或无法定位的来源。".to_string(),
+                deep: false,
+            },
+            ChatSuggestion {
+                title: "生成修订建议".to_string(),
+                description: "让 AI 给出逐项可接受的修改提案。".to_string(),
+                prompt: "请针对当前报告给出逐项、可接受的修改建议，重点检查证据边界和表述严谨性。".to_string(),
+                deep: false,
+            },
+        ];
+    }
+    vec![
+        ChatSuggestion {
+            title: "继续追问".to_string(),
+            description: "追问上一条回答里最不确定的判断。".to_string(),
+            prompt: "请进一步解释上一条回答中最关键但最不确定的一个判断，并给出至少两种验证方式。".to_string(),
+            deep: false,
+        },
+        ChatSuggestion {
+            title: "检索证据".to_string(),
+            description: "实际检索并标注来源覆盖级别。".to_string(),
+            prompt: "请检索上一条回答涉及的关键事实与文献，列出至少 3 条来源，标注覆盖级别和是否需要全文。".to_string(),
+            deep: true,
+        },
+        ChatSuggestion {
+            title: "形成研究设计".to_string(),
+            description: "整理成问题、数据、方法、产出与风险。".to_string(),
+            prompt: "请把上一条回答整理成研究问题、数据/材料、分析步骤、预期产出与主要风险。".to_string(),
+            deep: false,
+        },
+    ]
+}
+
+fn extract_suggestions(content: &str) -> (String, Vec<ChatSuggestion>) {
+    const START: &str = "[[CERS_ACTIONS]]";
+    const END: &str = "[[/CERS_ACTIONS]]";
+    let Some(start) = content.find(START) else {
+        return (content.to_string(), Vec::new());
+    };
+    let after = &content[start + START.len()..];
+    let Some(end) = after.find(END) else {
+        return (content.to_string(), Vec::new());
+    };
+    let payload = after[..end].trim();
+    let mut suggestions = Vec::new();
+    if let Some(value) = extract_json_object(payload) {
+        if let Some(items) = value.get("actions").and_then(|item| item.as_array()) {
+            for item in items.iter().take(4) {
+                let title = item
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let prompt = item
+                    .get("prompt")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if title.is_empty() || prompt.is_empty() {
+                    continue;
+                }
+                suggestions.push(ChatSuggestion {
+                    title,
+                    description: item
+                        .get("description")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string(),
+                    prompt,
+                    deep: item
+                        .get("deep")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                });
+            }
+        }
+    }
+    let clean = format!(
+        "{}{}",
+        content[..start].trim_end(),
+        &after[end + END.len()..]
+    )
+    .trim()
+    .to_string();
+    (clean, suggestions)
+}
+
 fn parse_text_tool_calls(content: &str, step: usize) -> Vec<serde_json::Value> {
     let mut calls = Vec::new();
     let mut rest = content;
@@ -2805,6 +2964,26 @@ fn run_direct_baseline(app: &tauri::AppHandle, question: &str) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_suggestions_and_strips_marker() {
+        let content = "正文结论。
+
+[[CERS_ACTIONS]]{\"actions\":[{\"title\":\"检索证据\",\"description\":\"查来源\",\"prompt\":\"请检索关键文献\",\"deep\":true}]}[[/CERS_ACTIONS]]";
+        let (clean, suggestions) = extract_suggestions(content);
+        assert_eq!(clean, "正文结论。");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].title, "检索证据");
+        assert!(suggestions[0].deep);
+        assert!(!clean.contains("CERS_ACTIONS"));
+
+        let context = NodeChatContext {
+            node_type: "research".to_string(),
+            title: "测试".to_string(),
+            goal: String::new(),
+        };
+        assert_eq!(default_suggestions(&context).len(), 3);
+    }
 
     #[test]
     fn strips_model_reference_tail_and_matches_citations() {

@@ -450,12 +450,32 @@ impl McpRegistry {
 }
 
 const BUNDLED_COMMAND: &str = "__cers_bundled_mcp__";
+const BUNDLED_SIDECAR_COMMAND: &str = "__cers_bundled_sidecar__";
 
 fn resolved_command(
     config: &McpServerConfig,
     resource_dir: Option<&std::path::Path>,
 ) -> Result<(std::path::PathBuf, String), String> {
-    let binary = if config.command == BUNDLED_COMMAND {
+    let binary = if config.command == BUNDLED_SIDECAR_COMMAND {
+        let name = if cfg!(windows) {
+            "chengsi-worker.exe"
+        } else {
+            "chengsi-worker"
+        };
+        let resource = resource_dir.map(|directory| directory.join("sidecar").join(name));
+        if let Some(path) = resource.filter(|path| path.is_file()) {
+            path
+        } else {
+            let fallback = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../services/research-worker/dist")
+                .join(name);
+            if fallback.is_file() {
+                fallback
+            } else {
+                return Err("内置研究侧车缺失，请重新安装应用或更新安装包。".to_string());
+            }
+        }
+    } else if config.command == BUNDLED_COMMAND {
         let name = if cfg!(windows) {
             "cers-mcp-research.exe"
         } else {

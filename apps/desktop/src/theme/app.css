@@ -2944,3 +2944,54 @@ code,
   font-size: var(--text-xs);
   line-height: 1.55;
 }
+
+/* ---------- task streaming (decomposition / outline / revision) ---------- */
+
+.task-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-stream-status {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.task-stream-reasoning,
+.task-stream-content {
+  padding: 8px 10px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  font-size: var(--text-xs);
+}
+
+.task-stream-reasoning summary,
+.task-stream-content summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.task-stream-reasoning pre,
+.task-stream-content pre {
+  max-height: 220px;
+  margin: 6px 0 0;
+  overflow: auto;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-actions {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.message-actions .quick-action-card {
+  padding: 8px 10px;
+}

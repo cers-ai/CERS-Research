@@ -1,0 +1,87 @@
+name: Release (SignPath OSS signing)
+
+# 手动触发：填写要发布的 tag（例如 v0.0.4）。
+# 需要先在 SignPath 完成开源项目审核，并配置：
+#   secrets.SIGNPATH_API_TOKEN
+#   secrets.SIGNPATH_ORGANIZATION_ID
+#   vars.SIGNPATH_PROJECT_SLUG
+#   vars.SIGNPATH_SIGNING_POLICY_SLUG
+#   vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建并发布的 tag，例如 v0.0.4"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build sidecar and installer
+        run: |
+          npm run build:sidecar
+          cd apps/desktop
+          npx tauri build --bundles nsis
+
+      - name: Upload unsigned installer
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: cers-academic-unsigned
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit to SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Collect signed installer
+        run: |
+          mkdir -p release
+          find signed -type f -iname '*.exe' -exec cp {} release/ \;
+          ls -la release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: "澄思学术 ${{ inputs.tag }}"
+          files: release/*.exe
+          generate_release_notes: true

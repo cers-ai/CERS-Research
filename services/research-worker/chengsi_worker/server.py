@@ -21,6 +21,7 @@ from .experiments import run_experiment
 from .news import search_news
 from .reports import export_report
 from .sources import search_sources
+from .web import fetch_page, list_feed
 
 CONTRACT_VERSION = 1
 _BIND_HOST = "127.0.0.1"
@@ -57,6 +58,22 @@ class _Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
+        if self.path in ("/web/fetch", "/feed/list"):
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            result = fetch_page(payload) if self.path == "/web/fetch" else list_feed(payload)
+            self._send_json(200, result)
+            return
+
+        if self.path == "/chat/stream":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            self._start_ndjson()
+            _chat_stream(payload, self._emit_ndjson)
+            return
+
         if self.path in (
             "/chat",
             "/sources/search",
@@ -80,6 +97,22 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(404, {"ok": False, "error": "not_found"})
+
+    def _start_ndjson(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def _emit_ndjson(self, payload: dict[str, Any]) -> None:
+        try:
+            line = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+            self.wfile.write(line)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _read_json_body(self) -> dict[str, Any] | None:
         length_header = self.headers.get("Content-Length", "0")
@@ -262,6 +295,143 @@ def _response_error(response: httpx.Response) -> str | None:
     try:
         data = response.json()
     except ValueError:
+        return None
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        return str(message) if message else None
+    if isinstance(error, str):
+        return error
+    return None
+
+
+def _chat_stream(payload: dict[str, Any], emit: Any) -> None:
+    provider = payload.get("provider")
+    messages = payload.get("messages")
+    model_id = str(payload.get("modelId") or "").strip()
+    if not isinstance(provider, dict) or not model_id:
+        emit({"type": "error", "message": "缺少模型服务或模型 ID。"})
+        return
+    if not isinstance(messages, list) or not messages:
+        emit({"type": "error", "message": "缺少对话消息。"})
+        return
+    base_url = str(provider.get("baseUrl") or "").strip()
+    if not base_url.startswith(("http://", "https://")):
+        emit({"type": "error", "message": "模型服务 Base URL 无效。"})
+        return
+
+    protocol = str(provider.get("protocol") or "openai_compatible")
+    endpoint = chat_endpoint(base_url, protocol)
+    api_key = payload.get("apiKey")
+    timeout = float(provider.get("timeoutSeconds") or 90)
+    proxy = provider.get("proxy") or None
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "ChengsiAcademic/0.1",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    request_body = {
+        "model": model_id,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": int(payload.get("maxTokens") or 2048),
+        "temperature": float(payload.get("temperature") or 0.4),
+    }
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        request_body["tools"] = tools
+        request_body["tool_choice"] = "auto"
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_slots: dict[int, dict[str, Any]] = {}
+    usage = None
+    model = model_id
+
+    try:
+        with httpx.Client(timeout=timeout, proxy=proxy) as client:
+            with client.stream("POST", endpoint, headers=headers, json=request_body) as response:
+                if response.status_code >= 400:
+                    body = response.read().decode("utf-8", errors="replace")
+                    emit(
+                        {
+                            "type": "error",
+                            "message": _response_error_text(body)
+                            or f"模型服务返回 HTTP {response.status_code}",
+                        }
+                    )
+                    return
+                for raw_line in response.iter_lines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    if chunk.get("model"):
+                        model = str(chunk["model"])
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if reasoning:
+                        text = str(reasoning)
+                        reasoning_parts.append(text)
+                        emit({"type": "delta", "kind": "reasoning", "text": text})
+                    content = delta.get("content")
+                    if content:
+                        text = str(content)
+                        content_parts.append(text)
+                        emit({"type": "delta", "kind": "content", "text": text})
+                    for call in delta.get("tool_calls") or []:
+                        index = int(call.get("index") or 0)
+                        slot = tool_slots.setdefault(
+                            index,
+                            {
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if call.get("id"):
+                            slot["id"] = str(call["id"])
+                        function = call.get("function") or {}
+                        if function.get("name"):
+                            slot["function"]["name"] = str(function["name"])
+                        if function.get("arguments"):
+                            slot["function"]["arguments"] += str(function["arguments"])
+    except httpx.RequestError as exc:
+        emit({"type": "error", "message": f"网络请求失败：{exc}"})
+        return
+
+    calls = [tool_slots[index] for index in sorted(tool_slots)]
+    emit(
+        {
+            "type": "done",
+            "content": "".join(content_parts),
+            "toolCalls": calls,
+            "reasoningContent": "".join(reasoning_parts) or None,
+            "model": model,
+            "usage": usage,
+        }
+    )
+
+
+def _response_error_text(text: str) -> str | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return None
     error = data.get("error")
     if isinstance(error, dict):

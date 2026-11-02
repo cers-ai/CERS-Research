@@ -76,6 +76,75 @@ impl SidecarManager {
         http_json_request(port, &token, path, body)
     }
 
+    pub fn post_json_stream<F>(
+        &mut self,
+        path: &str,
+        body: &Value,
+        mut on_line: F,
+    ) -> Result<String, String>
+    where
+        F: FnMut(&str),
+    {
+        let status = self.status();
+        if !status.ok {
+            return Err(status.message);
+        }
+        let port = self
+            .port
+            .ok_or_else(|| "Sidecar 尚未监听端口。".to_string())?;
+        let token = self
+            .token
+            .clone()
+            .ok_or_else(|| "Sidecar 会话令牌缺失。".to_string())?;
+        let serialized = serde_json::to_string(body)
+            .map_err(|error| format!("序列化 Sidecar 请求失败：{error}"))?;
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1500))
+            .map_err(|error| format!("连接 Sidecar 失败：{error}"))?;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(300)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            serialized.len(),
+            serialized
+        );
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|error| format!("发送 Sidecar 请求失败：{error}"))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut status_line = String::new();
+        reader
+            .read_line(&mut status_line)
+            .map_err(|error| format!("读取 Sidecar 响应失败：{error}"))?;
+        if !status_line.starts_with("HTTP/1.1 200") && !status_line.starts_with("HTTP/1.0 200") {
+            let mut rest = String::new();
+            let _ = reader.read_to_string(&mut rest);
+            return Err(format!("Sidecar 返回异常：{}", status_line.trim()));
+        }
+        loop {
+            let mut header = String::new();
+            let read = reader
+                .read_line(&mut header)
+                .map_err(|error| format!("读取 Sidecar 响应头失败：{error}"))?;
+            if read == 0 || header.trim().is_empty() {
+                break;
+            }
+        }
+
+        let mut last = String::new();
+        for line in reader.lines() {
+            let line = line.map_err(|error| format!("读取 Sidecar 流失败：{error}"))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            on_line(&line);
+            last = line;
+        }
+        Ok(last)
+    }
+
     fn frozen_binary(&self) -> Option<PathBuf> {
         if let Ok(configured) = env::var("CERS_SIDECAR_BIN") {
             let candidate = PathBuf::from(configured);

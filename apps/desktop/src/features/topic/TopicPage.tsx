@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { ChatPanel } from "../../components/ChatPanel";
+import { ChatPanel, type QuickAction } from "../../components/ChatPanel";
 import { Modal } from "../../components/Modal";
 import {
   getGlobalSettings,
@@ -18,6 +18,38 @@ interface TopicPageProps {
   onOpenFolder: () => void;
   onOpenSettings: () => void;
 }
+
+const RESEARCH_ACTIONS: QuickAction[] = [
+  {
+    id: "narrow",
+    title: "收敛核心问题",
+    description: "把当前方向收敛成一个可检验的问题，并给出备选表述。",
+    prompt:
+      "请把当前研究方向收敛成一个可检验的核心问题，并给出 2-3 个备选表述；同时指出每个表述对应的数据与方法要求。",
+  },
+  {
+    id: "evaluate",
+    title: "评估创新与风险",
+    description: "指出创新点、可行性和最可能被质疑的地方。",
+    prompt:
+      "请评估这个选题的创新性与可行性，列出最可能被评审质疑的 3 个点，并给出对应的补强办法。",
+  },
+  {
+    id: "literature",
+    title: "检索关键文献",
+    description: "实际检索文献，标注覆盖级别与可复用方法。",
+    prompt:
+      "请检索该方向近五年的关键文献，列出 5 条，标注 DOI、覆盖级别、核心结论与可复用方法；没有全文时不要假装读过。",
+    deep: true,
+  },
+  {
+    id: "design",
+    title: "形成研究设计",
+    description: "拆成研究问题、数据、分析步骤与预期产出。",
+    prompt:
+      "请把当前选题拆成研究问题、所需数据/材料、分析步骤、预期产出与主要风险，形成可执行的研究设计草案。",
+  },
+];
 
 export function TopicPage({
   workspace,
@@ -232,6 +264,7 @@ export function TopicPage({
               </p>
               <ChatPanel
                 defaultDeepResearch={false}
+                quickActions={RESEARCH_ACTIONS}
                 nodeId={workspace.rootNodeId}
                 className="topic-chat-panel"
                 placeholder="例如：我想比较不同城市绿地规划方式对局地热环境的影响……"

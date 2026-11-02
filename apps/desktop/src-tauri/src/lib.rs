@@ -41,7 +41,11 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let mut manager = state.sidecar.lock().ok();
                 if let Some(manager) = manager.as_mut() {
-                    manager.set_resource_dir(resource_dir);
+                    manager.set_resource_dir(resource_dir.clone());
+                }
+                let mut mcp = state.mcp.lock().ok();
+                if let Some(registry) = mcp.as_mut() {
+                    registry.set_resource_dir(resource_dir);
                 }
             }
 

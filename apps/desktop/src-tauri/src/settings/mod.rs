@@ -455,8 +455,9 @@ fn load_settings(app: &tauri::AppHandle) -> Result<GlobalSettings, String> {
     }
 
     let text = fs::read_to_string(&path).map_err(|error| format!("无法读取设置文件：{error}"))?;
-    serde_json::from_str(&text)
-        .map_err(|error| format!("设置文件格式无效（{}）：{error}", path.display()))
+    let settings: GlobalSettings = serde_json::from_str(&text)
+        .map_err(|error| format!("设置文件格式无效（{}）：{error}", path.display()))?;
+    Ok(settings)
 }
 
 pub(crate) struct ResolvedModel {

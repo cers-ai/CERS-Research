@@ -1592,7 +1592,11 @@ fn run_agent_turn(
             "temperature": 0.3,
             "tools": tool_specs
         });
-        let parsed = sidecar_json(app, "/chat", &payload)?;
+        let _ = app.emit(
+            "agent-stream-start",
+            serde_json::json!({"nodeId": node_id, "step": step}),
+        );
+        let parsed = sidecar_chat_stream(app, node_id, &payload)?;
         if parsed.get("ok").and_then(|value| value.as_bool()) != Some(true) {
             let message = parsed
                 .get("message")
@@ -1756,6 +1760,66 @@ fn run_agent_turn(
     })
 }
 
+fn sidecar_chat_stream(
+    app: &tauri::AppHandle,
+    node_id: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<AppState>();
+    let mut manager = state
+        .sidecar
+        .lock()
+        .map_err(|_| "Sidecar 状态不可用，请重启应用。".to_string())?;
+    let mut done: Option<serde_json::Value> = None;
+    let mut error: Option<String> = None;
+    manager.post_json_stream("/chat/stream", payload, |line| {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        match value.get("type").and_then(|item| item.as_str()) {
+            Some("delta") => {
+                let kind = value
+                    .get("kind")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("content");
+                let text = value
+                    .get("text")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("");
+                if !text.is_empty() {
+                    let _ = app.emit(
+                        "agent-delta",
+                        serde_json::json!({
+                            "nodeId": node_id,
+                            "kind": kind,
+                            "text": text
+                        }),
+                    );
+                }
+            }
+            Some("done") => done = Some(value),
+            Some("error") => {
+                error = Some(
+                    value
+                        .get("message")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("模型流式调用失败。")
+                        .to_string(),
+                )
+            }
+            _ => {}
+        }
+    })?;
+    if let Some(message) = error {
+        return Err(message);
+    }
+    let Some(mut value) = done else {
+        return Err("模型流式响应不完整。".to_string());
+    };
+    value["ok"] = serde_json::Value::Bool(true);
+    Ok(value)
+}
+
 fn sidecar_json(
     app: &tauri::AppHandle,
     path: &str,
@@ -1785,6 +1849,36 @@ fn builtin_tool_specs() -> Vec<serde_json::Value> {
                         "yearTo": {"type": "integer", "description": "结束年份，可选"}
                     },
                     "required": ["query"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cers_fetch_web_page",
+                "description": "读取公开网页并提取标题与正文，用于核实监管文件、新闻原文或论文摘要页；只返回文本，不执行网页代码。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "http 或 https 网页地址"},
+                        "maxChars": {"type": "integer", "description": "最多返回字符数"}
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cers_list_feed",
+                "description": "读取公开 RSS/Atom 订阅，返回标题、链接、摘要和发布时间。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "RSS/Atom 地址"},
+                        "limit": {"type": "integer", "description": "最多返回条目数"}
+                    },
+                    "required": ["url"]
                 }
             }
         }),
@@ -1865,6 +1959,79 @@ fn execute_tool(
             text,
             format!("学术检索：{} 条，收藏 {} 条", records.len(), saved),
             "CERS 学术来源".to_string(),
+            true,
+        ));
+    }
+
+    if name == "cers_fetch_web_page" {
+        let url = arguments
+            .get("url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if url.is_empty() {
+            return Err("网页抓取需要 url。".to_string());
+        }
+        let payload = serde_json::json!({
+            "url": url,
+            "maxChars": arguments.get("maxChars").and_then(|value| value.as_i64()).unwrap_or(6000)
+        });
+        let result = sidecar_json(app, "/web/fetch", &payload)?;
+        if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            return Err(result
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("网页抓取失败。")
+                .to_string());
+        }
+        let title = result
+            .get("title")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let chars = result
+            .get("chars")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        return Ok((
+            result.to_string(),
+            format!("网页抓取：{title}（{chars} 字符）"),
+            "CERS 网页工具".to_string(),
+            true,
+        ));
+    }
+
+    if name == "cers_list_feed" {
+        let url = arguments
+            .get("url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if url.is_empty() {
+            return Err("订阅读取需要 url。".to_string());
+        }
+        let payload = serde_json::json!({
+            "url": url,
+            "limit": arguments.get("limit").and_then(|value| value.as_i64()).unwrap_or(10)
+        });
+        let result = sidecar_json(app, "/feed/list", &payload)?;
+        if result.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+            return Err(result
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("订阅读取失败。")
+                .to_string());
+        }
+        let count = result
+            .get("items")
+            .and_then(|value| value.as_array())
+            .map(|items| items.len())
+            .unwrap_or(0);
+        return Ok((
+            result.to_string(),
+            format!("订阅读取：{count} 条"),
+            "CERS 网页工具".to_string(),
             true,
         ));
     }
@@ -2074,7 +2241,7 @@ fn system_prompt(
     if deep_research {
         prompt.push_str(
             "\n工具使用：需要学术证据时调用 cers_academic_search；需要近期动态时调用 cers_news_search；\
-             需要核实监管文件或新闻原文时，调用名称以 mcp_ 开头的 MCP 工具读取原文。\
+             需要核实监管文件、新闻原文或论文摘要页时调用 cers_fetch_web_page；             自定义 MCP 工具以 mcp_ 开头。\
              最多进行 8 轮工具调用，得到足够证据后给出结论。\n",
         );
     } else {

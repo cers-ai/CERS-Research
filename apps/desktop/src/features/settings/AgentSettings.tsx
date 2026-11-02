@@ -137,8 +137,8 @@ export function AgentSettings({ settings, onPersist }: AgentSettingsProps) {
 
         {servers.length === 0 && (
           <p className="hint">
-            还没有 MCP 服务。示例：命令 `uv`，参数逐行填写
-            `run`、`--python`、`3.13`、`python`、`services/mcp-research/server.py`。
+            内置网页与 RSS 读取工具已随安装包提供，不需要另行配置 MCP。
+            如需连接自定义 stdio MCP 服务，再在这里添加；其运行环境由该服务自身提供。
           </p>
         )}
 
@@ -164,7 +164,12 @@ export function AgentSettings({ settings, onPersist }: AgentSettingsProps) {
                 <label className="form-field">
                   <span>启动命令</span>
                   <input
-                    value={server.command}
+                    value={
+                      server.command === "__cers_bundled_mcp__"
+                        ? "内置服务（随安装包提供）"
+                        : server.command
+                    }
+                    disabled={server.command === "__cers_bundled_mcp__"}
                     placeholder="uv / npx / python"
                     onChange={(event) => update(index, { command: event.target.value })}
                   />

@@ -2870,3 +2870,77 @@ code,
 .lit-modes .citation-search {
   margin-left: auto;
 }
+
+.node-chat-message.is-live {
+  border-style: dashed;
+  background: var(--color-surface-subtle);
+}
+
+.node-chat-reasoning {
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+}
+
+.node-chat-reasoning summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.node-chat-reasoning pre {
+  max-height: 200px;
+  margin: 6px 0 0;
+  overflow: auto;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- quick action cards ---------- */
+
+.quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.quick-action-card:hover:not(:disabled) {
+  border-color: var(--color-primary-border);
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.08);
+}
+
+.quick-action-card:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.quick-action-card strong {
+  font-size: var(--text-sm);
+}
+
+.quick-action-card span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}

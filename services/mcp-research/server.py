@@ -235,8 +235,11 @@ def _respond(payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    for line in sys.stdin:
-        line = line.strip()
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            break
+        line = raw.strip()
         if not line:
             continue
         try:

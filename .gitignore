@@ -52,3 +52,7 @@ Thumbs.db
 # --- internal requirements / design documents (not published) ---
 0.需求/
 docs/
+
+# MCP research service build artifacts
+services/mcp-research/build/
+services/mcp-research/dist/

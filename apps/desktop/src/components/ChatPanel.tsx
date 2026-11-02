@@ -10,8 +10,17 @@ import {
   type ToolEvent,
 } from "../lib/ipc";
 
+export interface QuickAction {
+  id: string;
+  title: string;
+  description: string;
+  prompt: string;
+  deep?: boolean;
+}
+
 interface ChatPanelProps {
   nodeId: string;
+  quickActions?: QuickAction[];
   placeholder?: string;
   emptyText?: string;
   className?: string;
@@ -28,6 +37,7 @@ export function ChatPanel({
   placeholder = "提出研究问题、要求比较方法或继续推进当前节点……",
   emptyText = "围绕当前节点目标提问。深度研究模式会调用学术检索、资讯与 MCP 工具，并在对话中保留工具轨迹。",
   className,
+  quickActions,
   defaultDeepResearch = false,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -38,6 +48,8 @@ export function ChatPanel({
   const [deepResearch, setDeepResearch] = useState(defaultDeepResearch);
   const [liveTool, setLiveTool] = useState<LiveTool | null>(null);
   const [liveEvents, setLiveEvents] = useState<ToolEvent[]>([]);
+  const [liveContent, setLiveContent] = useState("");
+  const [liveReasoning, setLiveReasoning] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,6 +60,8 @@ export function ChatPanel({
     setLoaded(false);
     setLiveTool(null);
     setLiveEvents([]);
+    setLiveContent("");
+    setLiveReasoning("");
 
     getConversation(nodeId)
       .then((items) => {
@@ -87,6 +101,29 @@ export function ChatPanel({
           setLiveEvents((current) => [...current, event.payload]);
         }
       });
+      const streamStart = await listen<{ nodeId: string }>(
+        "agent-stream-start",
+        (event) => {
+          if (!disposed && event.payload.nodeId === nodeId) {
+            setLiveContent("");
+            setLiveReasoning("");
+            setLiveTool(null);
+          }
+        },
+      );
+      const delta = await listen<{ nodeId: string; kind: string; text: string }>(
+        "agent-delta",
+        (event) => {
+          if (!disposed || event.payload.nodeId !== nodeId) {
+            return;
+          }
+          if (event.payload.kind === "reasoning") {
+            setLiveReasoning((current) => current + event.payload.text);
+          } else {
+            setLiveContent((current) => current + event.payload.text);
+          }
+        },
+      );
       const status = await listen<{ nodeId: string; phase: string }>(
         "agent-status",
         (event) => {
@@ -95,7 +132,7 @@ export function ChatPanel({
           }
         },
       );
-      unlisteners.push(start, finish, status);
+      unlisteners.push(start, finish, streamStart, delta, status);
     };
 
     void register();
@@ -113,19 +150,27 @@ export function ChatPanel({
     if (element) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [messages, sending, liveTool, liveEvents]);
+  }, [messages, sending, liveTool, liveEvents, liveContent, liveReasoning]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (override?: string, forceDeep?: boolean) => {
+    const text = (override ?? input).trim();
     if (!text || sending) {
       return;
+    }
+    const useDeep = forceDeep ?? deepResearch;
+    if (useDeep) {
+      setDeepResearch(true);
     }
 
     setSending(true);
     setError(null);
-    setInput("");
+    if (!override) {
+      setInput("");
+    }
     setLiveTool(null);
     setLiveEvents([]);
+    setLiveContent("");
+    setLiveReasoning("");
     setMessages((current) => [
       ...current,
       {
@@ -137,7 +182,7 @@ export function ChatPanel({
     ]);
 
     try {
-      const reply = await sendNodeMessage(nodeId, text, deepResearch);
+      const reply = await sendNodeMessage(nodeId, text, useDeep);
       setMessages(reply.messages);
     } catch (cause) {
       setError(toMessage(cause));
@@ -149,6 +194,8 @@ export function ChatPanel({
     } finally {
       setSending(false);
       setLiveTool(null);
+      setLiveContent("");
+      setLiveReasoning("");
     }
   };
 
@@ -206,6 +253,22 @@ export function ChatPanel({
             )}
           </div>
         ))}
+        {sending && (liveReasoning || liveContent) && (
+          <div className="node-chat-message is-live">
+            <span className="node-chat-author">科研伙伴（实时）</span>
+            {liveReasoning && (
+              <details className="node-chat-reasoning" open>
+                <summary>思考过程</summary>
+                <pre>{liveReasoning}</pre>
+              </details>
+            )}
+            {liveContent && (
+              <div className="node-chat-markdown markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveContent}</ReactMarkdown>
+              </div>
+            )}
+          </div>
+        )}
         {sending && liveTool && (
           <div className="node-chat-live">
             正在调用 {liveTool.server} · <span className="mono">{liveTool.name}</span>…
@@ -224,9 +287,29 @@ export function ChatPanel({
             ))}
           </div>
         )}
-        {sending && !liveTool && <div className="node-chat-typing">科研伙伴正在思考…</div>}
+        {sending && !liveTool && !liveContent && !liveReasoning && (
+          <div className="node-chat-typing">科研伙伴正在思考…</div>
+        )}
         {error && <div className="canvas-error">{error}</div>}
       </div>
+
+      {quickActions && quickActions.length > 0 && (
+        <div className="quick-actions" aria-label="可选研究操作">
+          {quickActions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className="quick-action-card"
+              disabled={sending}
+              onClick={() => void send(action.prompt, action.deep)}
+            >
+              <strong>{action.title}</strong>
+              <span>{action.description}</span>
+              {action.deep && <span className="tag tag--muted">深度研究</span>}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="node-chat-compose">
         <textarea

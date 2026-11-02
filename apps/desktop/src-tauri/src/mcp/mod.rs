@@ -49,15 +49,18 @@ impl Drop for Process {
 }
 
 impl Process {
-    fn connect(config: &McpServerConfig) -> Result<Self, String> {
-        let command_line = format!("{} {:?}", config.command, config.args);
-        let mut command = Command::new(&config.command);
+    fn connect(
+        config: &McpServerConfig,
+        resource_dir: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        let (binary, command_line) = resolved_command(config, resource_dir)?;
+        let mut command = Command::new(&binary);
         command
             .args(&config.args)
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         let mut child = command
             .spawn()
             .map_err(|error| format!("无法启动 MCP 服务 {}：{error}", config.name))?;
@@ -69,6 +72,14 @@ impl Process {
             .stdout
             .take()
             .ok_or_else(|| "MCP 服务缺少标准输出。".to_string())?;
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    eprintln!("[mcp] {line}");
+                }
+            });
+        }
 
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
@@ -94,6 +105,10 @@ impl Process {
             next_id: 0,
             tools: Vec::new(),
         };
+        std::thread::sleep(Duration::from_millis(400));
+        if let Ok(Some(status)) = process.child.try_wait() {
+            return Err(format!("MCP 服务启动后立即退出：{status}"));
+        }
 
         process.request(
             "initialize",
@@ -140,7 +155,19 @@ impl Process {
             let line = self
                 .receiver
                 .recv_timeout(remaining)
-                .map_err(|_| "MCP 服务响应超时。".to_string())?;
+                .map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => "MCP 服务响应超时。".to_string(),
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        let status = self
+                            .child
+                            .try_wait()
+                            .ok()
+                            .flatten()
+                            .map(|status| status.to_string())
+                            .unwrap_or_else(|| "退出状态未知".to_string());
+                        format!("MCP 服务已退出（{status}）。")
+                    }
+                })?;
             let value: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -276,6 +303,13 @@ fn sanitize(value: &str) -> String {
 #[derive(Default)]
 pub struct McpRegistry {
     processes: HashMap<String, Process>,
+    resource_dir: Option<std::path::PathBuf>,
+}
+
+impl McpRegistry {
+    pub fn set_resource_dir(&mut self, directory: std::path::PathBuf) {
+        self.resource_dir = Some(directory);
+    }
 }
 
 impl McpRegistry {
@@ -297,7 +331,7 @@ impl McpRegistry {
 
         let mut tools = Vec::new();
         for config in enabled.values() {
-            let expected = format!("{} {:?}", config.command, config.args);
+            let expected = expected_command_line(config, self.resource_dir.as_deref())?;
             let needs_restart = self
                 .processes
                 .get(&config.id)
@@ -305,7 +339,7 @@ impl McpRegistry {
                 .unwrap_or(true);
             if needs_restart {
                 self.processes.remove(&config.id);
-                let process = Process::connect(config)
+                let process = Process::connect(config, self.resource_dir.as_deref())
                     .map_err(|error| format!("MCP 服务 {} 不可用：{error}", config.name))?;
                 self.processes.insert(config.id.clone(), process);
             }
@@ -325,7 +359,12 @@ impl McpRegistry {
         if !config.enabled {
             return Err("该 MCP 服务已停用。".to_string());
         }
-        let expected = format!("{} {:?}", config.command, config.args);
+        let expected = match expected_command_line(config, self.resource_dir.as_deref()) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(error);
+            }
+        };
         let needs_restart = self
             .processes
             .get(&config.id)
@@ -333,7 +372,7 @@ impl McpRegistry {
             .unwrap_or(true);
         if needs_restart {
             self.processes.remove(&config.id);
-            let process = Process::connect(config)
+            let process = Process::connect(config, self.resource_dir.as_deref())
                 .map_err(|error| format!("MCP 服务 {} 不可用：{error}", config.name))?;
             self.processes.insert(config.id.clone(), process);
         }
@@ -357,15 +396,18 @@ impl McpRegistry {
                 error: Some("服务已停用。".to_string()),
             };
         }
-        let expected = format!("{} {:?}", config.command, config.args);
-        let needs_restart = self
-            .processes
-            .get(&config.id)
-            .map(|process| process.command_line != expected)
-            .unwrap_or(true);
+        let expected = expected_command_line(config, self.resource_dir.as_deref());
+        let needs_restart = match expected {
+            Ok(expected) => self
+                .processes
+                .get(&config.id)
+                .map(|process| process.command_line != expected)
+                .unwrap_or(true),
+            Err(_) => true,
+        };
         if needs_restart {
             self.processes.remove(&config.id);
-            match Process::connect(config) {
+            match Process::connect(config, self.resource_dir.as_deref()) {
                 Ok(process) => {
                     self.processes.insert(config.id.clone(), process);
                 }
@@ -405,6 +447,45 @@ impl McpRegistry {
     pub fn shutdown_all(&mut self) {
         self.processes.clear();
     }
+}
+
+const BUNDLED_COMMAND: &str = "__cers_bundled_mcp__";
+
+fn resolved_command(
+    config: &McpServerConfig,
+    resource_dir: Option<&std::path::Path>,
+) -> Result<(std::path::PathBuf, String), String> {
+    let binary = if config.command == BUNDLED_COMMAND {
+        let name = if cfg!(windows) {
+            "cers-mcp-research.exe"
+        } else {
+            "cers-mcp-research"
+        };
+        let resource = resource_dir.map(|directory| directory.join("sidecar").join(name));
+        if let Some(path) = resource.filter(|path| path.is_file()) {
+            path
+        } else {
+            let fallback = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../services/mcp-research/dist")
+                .join(name);
+            if fallback.is_file() {
+                fallback
+            } else {
+                return Err("内置 MCP 研究工具缺失，请重新安装应用或更新安装包。".to_string());
+            }
+        }
+    } else {
+        std::path::PathBuf::from(&config.command)
+    };
+    let command_line = format!("{} {:?}", binary.display(), config.args);
+    Ok((binary, command_line))
+}
+
+fn expected_command_line(
+    config: &McpServerConfig,
+    resource_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    resolved_command(config, resource_dir).map(|(_, line)| line)
 }
 
 #[cfg(test)]

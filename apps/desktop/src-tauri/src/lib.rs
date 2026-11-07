@@ -117,6 +117,7 @@ pub fn run() {
             commands::call_mcp_tool,
             commands::shutdown_mcp_server,
             commands::get_research_definition,
+            commands::suggest_research_definition,
             commands::save_research_definition,
             commands::run_experiment,
             commands::list_experiment_runs,

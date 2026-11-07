@@ -448,6 +448,12 @@ export interface ExperimentRun {
   finishedAt: string | null;
 }
 
+export interface ResearchDefinitionDraft {
+  content: ResearchDefinitionContent;
+  missingFields: string[];
+  summary: string | null;
+}
+
 export interface ResearchDefinition {
   content: ResearchDefinitionContent;
   confirmedFields: string[];
@@ -873,6 +879,12 @@ export async function listExperimentRuns(
 
 export async function getResearchDefinition(): Promise<ResearchDefinition> {
   return invoke<ResearchDefinition>("get_research_definition");
+}
+
+export async function suggestResearchDefinition(
+  nodeId: string,
+): Promise<ResearchDefinitionDraft> {
+  return invoke<ResearchDefinitionDraft>("suggest_research_definition", { nodeId });
 }
 
 export async function saveResearchDefinition(

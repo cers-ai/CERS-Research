@@ -21,6 +21,7 @@ export interface QuickAction {
 interface ChatPanelProps {
   nodeId: string;
   quickActions?: QuickAction[];
+  externalPrompt?: { id: number; text: string; deep?: boolean } | null;
   placeholder?: string;
   emptyText?: string;
   className?: string;
@@ -38,6 +39,7 @@ export function ChatPanel({
   emptyText = "围绕当前节点目标提问。深度研究模式会调用学术检索、资讯与 MCP 工具，并在对话中保留工具轨迹。",
   className,
   quickActions,
+  externalPrompt,
   defaultDeepResearch = false,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -198,6 +200,14 @@ export function ChatPanel({
       setLiveReasoning("");
     }
   };
+
+  useEffect(() => {
+    if (!externalPrompt?.text.trim()) {
+      return;
+    }
+    void send(externalPrompt.text, externalPrompt.deep);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalPrompt?.id]);
 
   return (
     <div className={`node-chat chat-panel ${className ?? ""}`}>

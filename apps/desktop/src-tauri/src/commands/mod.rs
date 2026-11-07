@@ -87,6 +87,14 @@ pub struct ToolEvent {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResearchDefinitionDraft {
+    pub content: ResearchDefinitionContent,
+    pub missing_fields: Vec<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReportChangesApplied {
     pub document: ReportDocument,
     pub proposal: ReportChangeProposalView,
@@ -776,6 +784,145 @@ pub fn confirm_proposal(
 ) -> Result<GraphSnapshot, String> {
     let workspace = current_workspace(&state)?;
     proposals::apply_proposal(&workspace, &proposal_id, nodes, edges)
+}
+
+#[tauri::command]
+pub async fn suggest_research_definition(
+    app: tauri::AppHandle,
+    node_id: String,
+) -> Result<ResearchDefinitionDraft, String> {
+    let workspace = workspace_for_app(&app)?;
+    let messages = chat::load_messages(&workspace, &node_id, 20)?;
+    if messages.is_empty() {
+        return Err("当前对话还没有内容，先描述你的研究想法。".to_string());
+    }
+    let existing = definition::get_definition(&workspace)?;
+    let settings = settings::load_settings_for_app(&app)?;
+    let resolved = settings::resolve_role(&settings, "research")?;
+
+    let mut transcript = String::new();
+    for message in &messages {
+        let role = if message.role == "user" {
+            "用户"
+        } else {
+            "科研伙伴"
+        };
+        transcript.push_str(&format!(
+            "{role}：{}
+
+",
+            message.body
+        ));
+        if transcript.chars().count() > 18_000 {
+            break;
+        }
+    }
+    let existing_text = serde_json::to_string(&existing.content)
+        .map_err(|error| format!("序列化现有研究定义失败：{error}"))?;
+    let system = "你是研究定义编辑。只从对话中已经出现或可合理归纳的信息提取研究定义，不得编造数据、方法或结论。        只输出一个 JSON 对象，不要 Markdown 代码块：        {\"question\":\"研究问题或null\",\"goal\":\"研究目标或null\",\"scope\":\"范围与边界或null\",\"approach\":\"方法方向或null\",\"expectedOutputs\":[\"预期成果\"],\"missingFields\":[\"缺失字段\"],\"summary\":\"一句话说明提取依据\"}。        规则：对话没有明确的信息就填 null/空数组，并在 missingFields 中列出；question 和 goal 至少填一个；不要继续扩展新方案，只做收敛提取。";
+    let user = format!(
+        "现有研究定义：{existing_text}
+
+对话记录：
+{transcript}"
+    );
+    let payload = serde_json::json!({
+        "provider": {
+            "baseUrl": resolved.provider.base_url,
+            "protocol": resolved.provider.protocol,
+            "proxy": resolved.provider.proxy,
+            "timeoutSeconds": resolved.provider.timeout_seconds
+        },
+        "modelId": resolved.model.model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "apiKey": resolved.api_key,
+        "maxTokens": 2200,
+        "temperature": 0.1
+    });
+
+    let task_id = format!("definition:{node_id}");
+    let app_for_blocking = app.clone();
+    let parsed = tauri::async_runtime::spawn_blocking(move || {
+        sidecar_task_stream(&app_for_blocking, &task_id, &payload)
+    })
+    .await
+    .map_err(|error| format!("研究定义提取任务失败：{error}"))??;
+
+    if parsed.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let message = parsed
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("模型未能提取研究定义。");
+        return Err(message.to_string());
+    }
+    let content_text = parsed
+        .get("content")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let value = extract_json_object(content_text)
+        .ok_or_else(|| "模型没有返回可解析的研究定义。".to_string())?;
+
+    let text_field = |name: &str| -> Option<String> {
+        value
+            .get(name)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty() && !item.eq_ignore_ascii_case("null"))
+            .map(str::to_string)
+    };
+    let content = ResearchDefinitionContent {
+        question: text_field("question"),
+        goal: text_field("goal"),
+        scope: text_field("scope"),
+        approach: text_field("approach"),
+        expected_outputs: value
+            .get("expectedOutputs")
+            .and_then(|item| item.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .take(6)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    if content.question.is_none() && content.goal.is_none() {
+        return Err(
+            "对话中还不足以形成研究问题或目标，请先说明研究对象与希望回答的问题。".to_string(),
+        );
+    }
+    let mut missing_fields = Vec::new();
+    if content.question.is_none() {
+        missing_fields.push("question".to_string());
+    }
+    if content.goal.is_none() {
+        missing_fields.push("goal".to_string());
+    }
+    if content.scope.is_none() {
+        missing_fields.push("scope".to_string());
+    }
+    if content.approach.is_none() {
+        missing_fields.push("approach".to_string());
+    }
+    if content.expected_outputs.is_empty() {
+        missing_fields.push("expectedOutputs".to_string());
+    }
+
+    Ok(ResearchDefinitionDraft {
+        content,
+        missing_fields,
+        summary: value
+            .get("summary")
+            .and_then(|item| item.as_str())
+            .map(str::to_string),
+    })
 }
 
 #[tauri::command]
@@ -1504,6 +1651,7 @@ fn run_agent_turn(
     let resolved = settings::resolve_role(&settings, "research")?;
     let saved_sources = stored_sources::linked_sources_for_chat(workspace, node_id, 20)?;
     let linked_assets = asset_links::linked_excerpts(workspace, node_id, 4, 1_200)?;
+    let project_definition = definition::get_definition(workspace).ok();
     let enabled_skills = if deep_research {
         skills::enabled_prompts(app, &settings).unwrap_or_default()
     } else {
@@ -1547,6 +1695,9 @@ fn run_agent_turn(
         &linked_assets,
         &enabled_skills,
         &mcp_note,
+        project_definition
+            .as_ref()
+            .map(|definition| &definition.content),
         deep_research,
     );
     let mut messages = vec![serde_json::json!({
@@ -2270,6 +2421,7 @@ fn system_prompt(
     linked_assets: &[(String, String)],
     skills: &[(String, String)],
     mcp_note: &str,
+    project_definition: Option<&ResearchDefinitionContent>,
     deep_research: bool,
 ) -> String {
     let type_label = match context.node_type.as_str() {
@@ -2301,6 +2453,52 @@ fn system_prompt(
         "\n当前日期：{}\n",
         chrono::Local::now().format("%Y-%m-%d")
     ));
+    if let Some(definition) = project_definition {
+        let mut parts = Vec::new();
+        if let Some(question) = definition
+            .question
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            parts.push(format!("研究问题：{question}"));
+        }
+        if let Some(goal) = definition
+            .goal
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            parts.push(format!("研究目标：{goal}"));
+        }
+        if let Some(scope) = definition
+            .scope
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            parts.push(format!("范围与边界：{scope}"));
+        }
+        if let Some(approach) = definition
+            .approach
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            parts.push(format!("方法方向：{approach}"));
+        }
+        if !parts.is_empty() {
+            prompt.push_str("\n项目研究定义（唯一事实源，围绕它收敛，不要另起炉灶）：\n");
+            prompt.push_str(&parts.join("\n"));
+            prompt.push('\n');
+        }
+    } else {
+        prompt.push_str(
+            "\n项目研究定义尚未形成。请尽快收敛到一个推荐方案，不要无限扩展备选题目；\
+             缺少关键定位时只问一个最关键的问题。\n",
+        );
+    }
+    prompt.push_str(
+        "\n收敛规则：如果用户已经多次要求形成设计或更换方案，不要再给新的备选列表；\
+         只保留一个推荐版本，并提示用户可在右侧点击“从对话提取”把结论写入研究定义。\n",
+    );
+
     if deep_research {
         prompt.push_str(
             "\n工具使用：需要学术证据时调用 cers_academic_search；需要近期动态时调用 cers_news_search；\
@@ -2470,9 +2668,9 @@ fn default_suggestions(context: &NodeChatContext) -> Vec<ChatSuggestion> {
             deep: true,
         },
         ChatSuggestion {
-            title: "形成研究设计".to_string(),
-            description: "整理成问题、数据、方法、产出与风险。".to_string(),
-            prompt: "请把上一条回答整理成研究问题、数据/材料、分析步骤、预期产出与主要风险。".to_string(),
+            title: "定位缺口".to_string(),
+            description: "只指出还缺的一个关键信息，不再扩展方案。".to_string(),
+            prompt: "请只指出当前研究定义或上一条回答中还缺少的一个最关键信息，并说明为什么它会影响可行性。".to_string(),
             deep: false,
         },
     ]

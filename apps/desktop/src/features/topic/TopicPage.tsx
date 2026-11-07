@@ -2,15 +2,18 @@ import { useEffect, useState } from "react";
 
 import { ChatPanel, type QuickAction } from "../../components/ChatPanel";
 import { Modal } from "../../components/Modal";
+import { TaskStreamView } from "../../components/TaskStreamView";
 import {
   getGlobalSettings,
   getResearchDefinition,
   saveResearchDefinition,
+  suggestResearchDefinition,
   type ResearchDefinition,
   type ResearchDefinitionContent,
   type SettingsView,
   type WorkspaceInfo,
 } from "../../lib/ipc";
+import { useTaskStream } from "../../lib/useTaskStream";
 import { resolveConfiguredModel } from "../../lib/modelReadiness";
 
 interface TopicPageProps {
@@ -19,13 +22,44 @@ interface TopicPageProps {
   onOpenSettings: () => void;
 }
 
+const SCOPE_ACTIONS: Array<{ id: string; title: string; description: string; prompt: string }> = [
+  {
+    id: "empirical",
+    title: "有数据，做实证",
+    description: "已有可分析的结构化数据，先锁定对象、核心问题与数据口径。",
+    prompt:
+      "我已有可分析的结构化数据，研究类型偏向实证检验。请根据当前对话锁定研究对象、一个核心问题和数据口径；只输出一个研究问题、目标、范围与方法、预期成果，不要继续给备选方案。如果缺少一个关键信息，只问我一个问题。",
+  },
+  {
+    id: "method",
+    title: "有数据，做方法",
+    description: "重点是模型、指标或分析框架，而不是泛泛综述。",
+    prompt:
+      "我已有数据，研究类型偏向方法建模或指标构建。请根据当前对话收敛出一个方法学问题、现有方法的缺口、可检验的改进点和评估口径；只输出一个可执行方案，不要再扩展备选题目。",
+  },
+  {
+    id: "policy",
+    title: "政策文本/文献比较",
+    description: "没有一手数据，做规范、政策或文献的结构化比较。",
+    prompt:
+      "我主要拥有政策文本、制度文件或文献材料，研究类型偏向规范/政策比较。请根据当前对话锁定比较对象、分析维度和可辩护的核心问题；只输出一个研究设计，不要再列新的选题方向。",
+  },
+  {
+    id: "case",
+    title: "访谈/问卷，做机制",
+    description: "以案例、访谈或问卷为主，强调机制与解释。",
+    prompt:
+      "我主要使用访谈、问卷或案例材料，研究类型偏向机制解释。请根据当前对话收敛出案例边界、访谈/问卷对象和一个可检验的机制问题；只输出一个研究设计，不要继续扩展备选题目。",
+  },
+];
+
 const RESEARCH_ACTIONS: QuickAction[] = [
   {
     id: "narrow",
     title: "收敛核心问题",
-    description: "把当前方向收敛成一个可检验的问题，并给出备选表述。",
+    description: "只给一个推荐问题，不再列多个备选。",
     prompt:
-      "请把当前研究方向收敛成一个可检验的核心问题，并给出 2-3 个备选表述；同时指出每个表述对应的数据与方法要求。",
+      "请基于当前对话和已有研究定义，只给出一个推荐的核心研究问题，不要列多个备选；说明为什么这样收敛，以及还缺哪一个关键信息。",
   },
   {
     id: "evaluate",
@@ -45,9 +79,9 @@ const RESEARCH_ACTIONS: QuickAction[] = [
   {
     id: "design",
     title: "形成研究设计",
-    description: "拆成研究问题、数据、分析步骤与预期产出。",
+    description: "整理成一个可采纳的推荐版本，不再扩展新方案。",
     prompt:
-      "请把当前选题拆成研究问题、所需数据/材料、分析步骤、预期产出与主要风险，形成可执行的研究设计草案。",
+      "请基于当前研究定义，只整理出一个推荐版本的研究问题、目标、范围、方法、预期成果与主要风险，不要新增备选方案；信息不足时只指出一个缺口。",
   },
 ];
 
@@ -64,6 +98,18 @@ export function TopicPage({
   const [definitionError, setDefinitionError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [savingDefinition, setSavingDefinition] = useState(false);
+  const [extractOpen, setExtractOpen] = useState(false);
+  const [extractLoading, setExtractLoading] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [extractSummary, setExtractSummary] = useState<string | null>(null);
+  const [scopePrompt, setScopePrompt] = useState<{
+    id: number;
+    text: string;
+    deep?: boolean;
+  } | null>(null);
+  const definitionStream = useTaskStream(
+    extractOpen && workspace ? `definition:${workspace.rootNodeId}` : null,
+  );
   const [form, setForm] = useState({
     question: "",
     goal: "",
@@ -142,6 +188,33 @@ export function TopicPage({
       expected: (content?.expectedOutputs ?? []).join("\n"),
     });
     setEditOpen(true);
+  };
+
+  const extractDefinition = async () => {
+    if (!workspace || extractLoading) {
+      return;
+    }
+    setExtractOpen(true);
+    setExtractLoading(true);
+    setExtractError(null);
+    setExtractSummary(null);
+    try {
+      const draft = await suggestResearchDefinition(workspace.rootNodeId);
+      setForm({
+        question: draft.content.question ?? "",
+        goal: draft.content.goal ?? "",
+        scope: draft.content.scope ?? "",
+        approach: draft.content.approach ?? "",
+        expected: draft.content.expectedOutputs.join("\n"),
+      });
+      setExtractSummary(draft.summary);
+      setExtractOpen(false);
+      setEditOpen(true);
+    } catch (cause) {
+      setExtractError(toMessage(cause));
+    } finally {
+      setExtractLoading(false);
+    }
   };
 
   const submitDefinition = async () => {
@@ -262,8 +335,34 @@ export function TopicPage({
               <p className="muted">
                 对话使用总课题节点上下文。没有证据时模型会明确说明，不会伪造文献、DOI 或实验结果。
               </p>
+              <div className="scope-cards">
+                <div className="section-head">
+                  <span className="muted">先锁定研究定位，再收敛题目</span>
+                </div>
+                <div className="quick-actions">
+                  {SCOPE_ACTIONS.map((action) => (
+                    <button
+                      key={action.id}
+                      type="button"
+                      className="quick-action-card"
+                      onClick={() =>
+                        setScopePrompt({
+                          id: Date.now(),
+                          text: action.prompt,
+                          deep: false,
+                        })
+                      }
+                    >
+                      <strong>{action.title}</strong>
+                      <span>{action.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <ChatPanel
                 defaultDeepResearch={false}
+                externalPrompt={scopePrompt}
                 quickActions={RESEARCH_ACTIONS}
                 nodeId={workspace.rootNodeId}
                 className="topic-chat-panel"
@@ -280,6 +379,14 @@ export function TopicPage({
             {definition && definition.revision > 0 && (
               <span className="tag tag--muted">v{definition.revision}</span>
             )}
+            <button
+              type="button"
+              className="btn btn--compact"
+              disabled={extractLoading}
+              onClick={() => void extractDefinition()}
+            >
+              {extractLoading ? "提取中…" : "从对话提取"}
+            </button>
             <button type="button" className="btn btn--compact" onClick={openDefinitionEditor}>
               编辑
             </button>
@@ -330,9 +437,40 @@ export function TopicPage({
           )}
           <p className="hint">
             研究定义默认按需展开，不要求一次填写完整。保存后会同步到项目概况与总课题节点。
+            如果对话已经收敛，可点“从对话提取”把研究问题、目标、范围、方法和预期成果一次填入。
           </p>
         </aside>
       </div>
+
+      {extractOpen && (
+        <Modal
+          title="从对话提取研究定义"
+          description="只提取对话中已经出现的信息；缺失项会保留为空，由你确认后保存。"
+          onClose={() => {
+            if (!extractLoading) {
+              setExtractOpen(false);
+            }
+          }}
+          footer={
+            <button
+              type="button"
+              className="btn"
+              disabled={extractLoading}
+              onClick={() => setExtractOpen(false)}
+            >
+              {extractLoading ? "提取中…" : "关闭"}
+            </button>
+          }
+        >
+          {extractError && <div className="canvas-error">{extractError}</div>}
+          <TaskStreamView
+            reasoning={definitionStream.reasoning}
+            content={definitionStream.content}
+            active={definitionStream.active}
+            label="正在从对话中收敛研究定义…"
+          />
+        </Modal>
+      )}
 
       {editOpen && (
         <Modal
@@ -355,6 +493,9 @@ export function TopicPage({
             </>
           }
         >
+          {extractSummary && (
+            <p className="hint">提取依据：{extractSummary}</p>
+          )}
           <label className="form-field">
             <span>研究问题</span>
             <textarea
